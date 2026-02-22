@@ -146,17 +146,17 @@ class VggtSalad:
         descriptors: torch.Tensor,
         th: float,
     ) -> List[int]:
-        n, d = descriptors.shape
-        _d = ref_descriptor.shape
-        assert _d == d, "Dimension mismatch"
-
+        n, _ = descriptors.shape
         keyframes = []
         current_ref = ref_descriptor
         for i in range(n):
             sim = (current_ref @ descriptors[i]).item()
             if sim < th:
+                print(f"Appending frame {i} to keyframes list")
                 keyframes.append(i)
                 current_ref = descriptors[i].clone()
+        if not keyframes:
+            print("Warning. Found no possible keyframe")
         return keyframes
 
     def keyframe_filtering(
@@ -167,9 +167,12 @@ class VggtSalad:
         descriptors = view_preds.global_descriptor
         if self.last_keyframe_descriptor is None:
             ref_descriptor = descriptors[0].clone()
+            print("Appending first frame to keyframes list")
+            prep_kf = [0]
         else:
             ref_descriptor = self.last_keyframe_descriptor
-        keyframes = VggtSalad.key_frame_selection(
+            prep_kf = []
+        keyframes = prep_kf + VggtSalad.key_frame_selection(
             ref_descriptor,
             descriptors,
             th_l,
