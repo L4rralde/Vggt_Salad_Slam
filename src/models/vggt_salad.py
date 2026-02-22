@@ -2,6 +2,7 @@ from typing import List
 
 from PIL import Image
 import torch
+from torchvision.transforms.functional import to_tensor
 import numpy as np
 from addict import Dict
 
@@ -18,31 +19,39 @@ class VggtSalad:
         self.model = self.model.eval().to(device)
         self.last_keyframe_descriptor: np.ndarray|None = None
 
+    @property
+    def backbone(self) -> torch.nn.Module:
+        return self.model.backbone
+
+    def preprocess_images(self, pil_img_list: List[Image.Image]) -> torch.Tensor:
+        return torch.stack([
+            to_tensor(self.backbone.preprocess_image(img))
+            for img in pil_img_list
+        ])
+
     def per_view_encoding(self, pil_img_list: List[Image.Image]) -> Dict[str, torch.Tensor]:
         #Image preprocessing and input checking
-        images = self.model.backbone.preprocess_images(pil_img_list)
-        images = torch.stack(images).to(self.device) #Torch tensor of shape n x C x H x W
+        images = self.preprocess_images(pil_img_list).to(self.device) #Torch tensor of shape n x C x H x W
         n, C, H, W = images.shape
         assert n == len(pil_img_list), "Something wrong happened with the number of images of the sequence"
         assert C == 3, "Expected a tensor of Images"
+        images = images.unsqueeze(0)
 
         #Inference pass
         dtype = torch.bfloat16 if torch.cuda.get_device_capability()[0] >= 8 else torch.float16
         with torch.no_grad():
             with torch.amp.autocast(self.device, dtype=dtype):
-                patch_tokens = self.model.backbone.dino_forward(images.unsqueeze(0)) # 1 x ...
-                feats, cls = self.model.backbone.prepare_tokens_for_salad(patch_tokens, images.shape)
+                patch_tokens = self.backbone.dino_forward(images) # 1 x ...
+                feats, cls = self.backbone.prepare_tokens_for_salad(patch_tokens, images.shape)
                 global_descriptor = self.model.aggregator((feats, cls)) #n x d
-        assert patch_tokens.size(0) == 1, "The first dimension corresponds to the scene/batch"
-        patch_tokens = patch_tokens.squeeze(0)
+        if isinstance(patch_tokens, dict):
+            patch_tokens = patch_tokens["x_norm_patchtokens"]
         n_desc, d = global_descriptor.shape
         assert n_desc == n, "Sequence lenght mismatch"
         #Preparing predictions for future steps.
-        if isinstance(patch_tokens, dict):
-            patch_tokens = patch_tokens["x_norm_patchtokens"]
 
         view_preds = Dict()
-        view_preds['images'] = images.cpu() # n x c x h x w
+        view_preds['images'] = images.squeeze(0).cpu() # n x c x h x w
         view_preds['patch_tokens'] = patch_tokens.cpu() # n x ...
         view_preds['global_descriptor'] = global_descriptor.cpu() # n x d
 
@@ -53,12 +62,12 @@ class VggtSalad:
         dtype = torch.bfloat16 if torch.cuda.get_device_capability()[0] >= 8 else torch.float16
         with torch.no_grad():
             with torch.amp.autocast(self.device, dtype=dtype):
-                aggregated_tokens_list, _ = self.model.backbone.alternate_attention(
+                aggregated_tokens_list, _ = self.backbone.alternate_attention(
                     view_preds.images.unsqueeze(0).to(self.device),
-                    view_preds.patch_tokens.unsqueeze(0).to(self.device)
+                    view_preds.patch_tokens.to(self.device)
                 )
         seq_preds = Dict()
-        seq_preds['seq_tokens_list'] = aggregated_tokens_list.squeeze(0).cpu()
+        seq_preds['seq_tokens_list'] = [t.cpu() for t in aggregated_tokens_list]
         seq_preds['images'] = view_preds.images
         torch.cuda.empty_cache()
 
@@ -68,53 +77,68 @@ class VggtSalad:
         dtype = torch.bfloat16 if torch.cuda.get_device_capability()[0] >= 8 else torch.float16
         with torch.no_grad():
             with torch.amp.autocast(self.device, dtype=dtype):
-                predictions = self.model.backbone.heads_forward(
+                seq_token_list = [t.to(self.device) for t in seq_preds.seq_tokens_list]
+                predictions = self.backbone.heads_forward(
                     seq_preds.images.unsqueeze(0).to(self.device),
-                    seq_preds.seq_tokens_list.unsqueeze(0).to(self.device),
-                    self.model.backbone.vggt.aggregator.patch_start_idx,
+                    seq_token_list,
+                    self.backbone.vggt.aggregator.patch_start_idx,
                     query_points=None
                 )
-        extrinsic, intrinsic = self.model.pose_encoding_to_extri_intri(
+        extrinsic, intrinsic = self.backbone.pose_encoding_to_extri_intri(
             predictions["pose_enc"],
             seq_preds["images"].shape[-2:]
         )
         predictions["extrinsic"] = extrinsic
         predictions["intrinsic"] = intrinsic
-        torch.cuda.empty_cache()
 
-        for key, value in predictions.items():
+        to_keep = ['depth', 'depth_conf', 'images', 'extrinsic', 'intrinsic']
+        filetered_preds = {
+            k: predictions[k]
+            for k in to_keep
+        }
+
+        for key, value in filetered_preds.items():
             if isinstance(value, torch.Tensor):
-                predictions[key] = value.cpu().numpy().squeeze(0)
-        return predictions
+                filetered_preds[key] = value.cpu().numpy().squeeze(0)
+
+        torch.cuda.empty_cache()
+        return filetered_preds
 
     def views_chunk_predicton(self, view_preds: Dict[str, torch.Tensor]) -> Dict[str, np.ndarray]:
         dtype = torch.bfloat16 if torch.cuda.get_device_capability()[0] >= 8 else torch.float16
         with torch.no_grad():
             with torch.amp.autocast(self.device, dtype=dtype):
                 images = view_preds.images.unsqueeze(0).to(self.device)
-                patch_tokens = view_preds.patch_tokens.unsqueeze(0).to(self.device)
-                aggregated_tokens_list, patch_start_idx = self.model.backbone.alternate_attention(
+                patch_tokens = view_preds.patch_tokens.to(self.device)
+                aggregated_tokens_list, patch_start_idx = self.backbone.alternate_attention(
                     images,
                     patch_tokens
                 )
-                predictions = self.model.backbone.heads_forward(
+                predictions = self.backbone.heads_forward(
                     images,
                     aggregated_tokens_list,
                     patch_start_idx,
                     query_points=None
                 )
-        extrinsic, intrinsic = self.model.pose_encoding_to_extri_intri(
+        extrinsic, intrinsic = self.backbone.pose_encoding_to_extri_intri(
             predictions["pose_enc"],
             images.shape[-2:]
         )
         predictions["extrinsic"] = extrinsic
         predictions["intrinsic"] = intrinsic
-        torch.cuda.empty_cache()
 
-        for key, value in predictions.items():
+        to_keep = ['depth', 'depth_conf', 'images', 'extrinsic', 'intrinsic']
+        filetered_preds = {
+            k: predictions[k]
+            for k in to_keep
+        }
+
+        for key, value in filetered_preds.items():
             if isinstance(value, torch.Tensor):
-                predictions[key] = value.cpu().numpy().squeeze(0)
-        return predictions
+                filetered_preds[key] = value.cpu().numpy().squeeze(0)
+
+        torch.cuda.empty_cache()
+        return filetered_preds
 
     @staticmethod
     def key_frame_selection(
