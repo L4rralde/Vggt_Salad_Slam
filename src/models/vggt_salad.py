@@ -172,7 +172,7 @@ class VggtSaladSplit:
         else:
             ref_descriptor = self.last_keyframe_descriptor
             prep_kf = []
-        keyframes = prep_kf + VggtSalad.key_frame_selection(
+        keyframes = prep_kf + VggtSaladSplit.key_frame_selection(
             ref_descriptor,
             descriptors,
             th_l,
