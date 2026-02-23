@@ -7,7 +7,7 @@ import numpy as np
 from addict import Dict
 
 
-class VggtSalad:
+class VggtSaladSplit:
     def __init__(self, vpr_repo: str, device: str='cuda') -> None:
         assert device == 'cuda', "VGGT only works with CUDA"
         self.device = 'cuda'
