@@ -29,7 +29,7 @@ class VggtSaladSplit:
             for img in pil_img_list
         ])
 
-    def per_view_encoding(self, pil_img_list: List[Image.Image]) -> Dict[str, torch.Tensor]:
+    def views_encoding(self, pil_img_list: List[Image.Image]) -> Dict[str, torch.Tensor]:
         #Image preprocessing and input checking
         images = self.preprocess_images(pil_img_list).to(self.device) #Torch tensor of shape n x C x H x W
         n, C, H, W = images.shape
@@ -43,22 +43,22 @@ class VggtSaladSplit:
             with torch.amp.autocast(self.device, dtype=dtype):
                 patch_tokens = self.backbone.dino_forward(images) # 1 x ...
                 feats, cls = self.backbone.prepare_tokens_for_salad(patch_tokens, images.shape)
-                global_descriptor = self.model.aggregator((feats, cls)) #n x d
+                descriptor = self.model.aggregator((feats, cls)) #n x d
         if isinstance(patch_tokens, dict):
             patch_tokens = patch_tokens["x_norm_patchtokens"]
-        n_desc, d = global_descriptor.shape
+        n_desc, d = descriptor.shape
         assert n_desc == n, "Sequence lenght mismatch"
         #Preparing predictions for future steps.
 
         view_preds = Dict()
         view_preds['images'] = images.squeeze(0).cpu() # n x c x h x w
         view_preds['patch_tokens'] = patch_tokens.cpu() # n x ...
-        view_preds['global_descriptor'] = global_descriptor.cpu() # n x d
+        view_preds['descriptor'] = descriptor.cpu() # n x d
 
         torch.cuda.empty_cache()
         return view_preds
 
-    def per_sequence_encoding(self, view_preds: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+    def sequence_encoding(self, view_preds: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
         dtype = torch.bfloat16 if torch.cuda.get_device_capability()[0] >= 8 else torch.float16
         with torch.no_grad():
             with torch.amp.autocast(self.device, dtype=dtype):
@@ -104,7 +104,7 @@ class VggtSaladSplit:
         torch.cuda.empty_cache()
         return filetered_preds
 
-    def views_chunk_predicton(self, view_preds: Dict[str, torch.Tensor]) -> Dict[str, np.ndarray]:
+    def chunk_prediction(self, view_preds: Dict[str, torch.Tensor]) -> Dict[str, np.ndarray]:
         dtype = torch.bfloat16 if torch.cuda.get_device_capability()[0] >= 8 else torch.float16
         with torch.no_grad():
             with torch.amp.autocast(self.device, dtype=dtype):

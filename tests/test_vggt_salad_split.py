@@ -43,10 +43,10 @@ def compare_pipelines(
 
         vggt_preds = vggt_salad_split.model.inference(selected_paths)
         imgs = [Image.open(p) for p in selected_paths]
-        perview_preds = vggt_salad_split.per_view_encoding(imgs)
-        perseq_latent = vggt_salad_split.per_sequence_encoding(perview_preds)
+        perview_preds = vggt_salad_split.views_encoding(imgs)
+        perseq_latent = vggt_salad_split.sequence_encoding(perview_preds)
         preds = vggt_salad_split.heads_prediction(perseq_latent)
-        chunk_preds = vggt_salad_split.views_chunk_predicton(perview_preds) #This are the two las stages aggregated.
+        chunk_preds = vggt_salad_split.chunk_prediction(perview_preds) #This are the two las stages aggregated.
 
         shared_keys = set([
             k
@@ -64,6 +64,11 @@ def compare_pipelines(
             if diff > 1e-6:
                 raise RuntimeError(f"{key} mismatch: {diff}")
             acc_diff += diff
+        
+        view_descriptors = perview_preds['descriptor'].numpy()
+        acc_diff += abs(vggt_preds['descriptor'] - view_descriptors).sum()
+        if diff > 1e-6:
+            raise RuntimeError(f"{key} mismatch: {diff}")
 
         status = "PASS" if acc_diff < 1e-6 else "FAIL"
         assert status == "PASS"
