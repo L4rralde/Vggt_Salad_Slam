@@ -2,3 +2,7 @@
 __pycache__
 *Untitled.ipynb
 .ipynb_checkpoints/
+*.pkl
+build
+install
+log
