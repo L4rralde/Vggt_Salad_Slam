@@ -40,14 +40,16 @@ int main(int argc, char ** argv)
   cv::Mat frame;
   std_msgs::msg::Header header;
 
+  auto logger = rclcpp::get_logger("video_publisher");
+  RCLCPP_INFO(logger, "Publishing video");
   while (rclcpp::ok()) {
 
     cap >> frame;
 
-    // Si llega al final del video, volver al inicio
-    if (frame.empty()) {
-      cap.set(cv::CAP_PROP_POS_FRAMES, 0);
-      continue;
+    // Si llega al final del video, terminar
+    if (frame.empty()){
+      RCLCPP_INFO(logger, "Finished publishing video");
+      break;
     }
 
     header.stamp = node->now();

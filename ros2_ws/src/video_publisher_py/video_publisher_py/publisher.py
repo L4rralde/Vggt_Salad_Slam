@@ -32,11 +32,16 @@ class Publisher(Node):
 
         timer_period = 1.0/fps
         self.timer = self.create_timer(timer_period, self.timer_callback)
+        self.get_logger().info("Publishing video")
 
     def timer_callback(self):
         ret, frame = self.video.read()
         if not ret:
-            self.video.set(cv2.CAP_PROP_POS_FRAMES, 0) #Reset vide when ends
+            self.get_logger().info("Video finished")
+            self.timer.cancel()
+            self.video.release()
+            self.destroy_node()
+            rclpy.shutdown()
             return
 
         msg = self.bridge.cv2_to_imgmsg(frame, encoding='bgr8')
@@ -53,11 +58,12 @@ def main(args=None):
         print("ros2 run video_publisher_py talker <video_path>")
         return
 
-    node = Publisher(video_path=sys.argv[1])
-    rclpy.spin(node)
-
-    node.destroy_node()
-    rclpy.shutdown()
+    try:
+        node = Publisher(video_path=sys.argv[1])
+        rclpy.spin(node)
+        node.destroy_node()
+    except:
+        rclpy.shutdown()
 
 
 if __name__ == '__main__':
