@@ -1,0 +1,14 @@
+#VGGT
+Pillow
+numpy<2
+torch
+torchvision
+huggingface_hub
+einops
+safetensors
+
+#Ros dependencies
+opencv-python
+#Visual Place Recognition dependencies
+addict
+pandas
