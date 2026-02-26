@@ -55,7 +55,7 @@ class Da3SaladSplit:
         output.pop('aux')
         output.pop('aux_cls')
         output['images'] = imgs_cpu
-        output['patch_tokens'] = x.cpu()
+        output['patch_tokens'] = x.squeeze(0).cpu()
         output['descriptor'] = descriptor.cpu()
         torch.cuda.empty_cache()
 
@@ -67,7 +67,7 @@ class Da3SaladSplit:
         with torch.no_grad():
             with torch.autocast(device_type=self.device, dtype=autocast_dtype):
                 outputs, _ = self.backbone._alt_attend(
-                    view_preds.patch_tokens.to(self.device, non_blocking=True),
+                    view_preds.patch_tokens.unsqueeze(0).to(self.device, non_blocking=True),
                     [1, *imgs_cpu.shape],
                     n=self.backbone.da3.model.backbone.out_layers,
                     **kwargs
@@ -112,7 +112,7 @@ class Da3SaladSplit:
         with torch.no_grad():
             with torch.autocast(device_type=self.device, dtype=autocast_dtype):
                 outputs, _ = self.backbone._alt_attend(
-                    view_preds.patch_tokens.to(self.device, non_blocking=True),
+                    view_preds.patch_tokens.unsqueeze(0).to(self.device, non_blocking=True),
                     [1, *imgs_cpu.shape],
                     n=self.backbone.da3.model.backbone.out_layers,
                     **kwargs
