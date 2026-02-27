@@ -1,5 +1,5 @@
 import os
-from typing import List, Dict
+from typing import List, Tuple
 from collections import deque
 from dataclasses import dataclass
 from time import perf_counter
@@ -13,6 +13,8 @@ import numpy as np
 from PIL import Image
 from torch import Tensor
 from torchvision.utils import save_image
+import torch
+from addict import Dict
 
 from models import get_model, VggtLikeSaladSplit
 
@@ -40,22 +42,22 @@ class KeyFrame:
 
 class KeyFramesBank:
     def __init__(self):
-        self.key_frames: List[KeyFrame] = []
+        self.key_frames: Dict[int, KeyFrame] = {}
+        self.processed: List[int] = []
         self.not_yet_processed: List[int] = []
+        self.last_id: int|None = None
 
     @property
     def last_descriptor(self) -> Tensor:
-        return self.key_frames[-1].descriptor
+        return self.key_frames[self.last_id].descriptor
 
     def append(self, keyframe: KeyFrame) -> None:
-        self.key_frames.append(keyframe)
+        self.last_id = keyframe.id
+        self.key_frames[keyframe.id] = keyframe
         self.not_yet_processed.append(keyframe.id)
         print(f"Appending key frame: {keyframe.id}")
-        os.makedirs('key_frames', exist_ok=True)
-        save_image(keyframe.img, f"key_frames/{keyframe.id}.jpeg")
 
-
-    def find_keyframes(self, view_preds: Dict[str, Tensor], th: float=0.85) -> None:
+    def find_keyframes(self, view_preds: Dict[str, Tensor], th: float=0.75) -> None:
         current_ref = self.last_descriptor
         new_keyframes = []
         for i, descriptor in enumerate(view_preds['descriptor']):
@@ -85,6 +87,36 @@ class KeyFramesBank:
                 frames_buffer[i].id
             )
             self.append(new_kf)
+
+
+    def fetch(self, shared: int) -> Tuple[List[KeyFrame]]:
+        return (
+            [self.key_frames[id] for id in self.processed[-shared:]],
+            [self.key_frames[id] for id in self.not_yet_processed]
+        )
+
+    def register(self, model: VggtLikeSaladSplit, shared: int, chunk_size: int) -> None:
+        registered, not_registered = self.fetch(shared)
+        n = chunk_size - shared
+        to_register = not_registered[:n]
+        registered_ids = [f.id for f in registered]
+        to_register_ids = [f.id for f in to_register]
+        all_frames = registered + to_register
+        assert len(all_frames) > 0, "No keyframes for 3D preds"
+        images = torch.stack([f.img for f in all_frames])
+        patch_tokens = torch.stack([f.patch_tokens for f in all_frames])
+
+        view_preds = Dict()
+        view_preds.images = images
+        view_preds.patch_tokens = patch_tokens
+
+        start = perf_counter()
+        print(f"Processing scene of {len(all_frames)} views with idcs ({registered_ids}), ({to_register_ids})")
+        model.chunk_prediction(view_preds)
+        end = perf_counter()
+        print(f"Took {end - start} seconds.")
+        self.not_yet_processed = self.not_yet_processed[n:]
+        self.processed += to_register_ids
 
 
 class FramesQ:
@@ -154,8 +186,9 @@ class VggtSaladSlamNode(Node):
 
             self.keyframes.update(view_preds, self.frames_buffer)
             self.frames_buffer.clear()
-            
 
+            if len(self.keyframes.not_yet_processed) > 5:
+                self.keyframes.register(self.model, 5, 10)
 
 
 def main(args=None):
