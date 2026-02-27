@@ -66,11 +66,9 @@ def compare_pipelines(
             acc_diff += diff
 
         view_descriptors = perview_preds['descriptor'].numpy()
-        desc_diff = abs(da3_preds['descriptor'] - view_descriptors).sum()
-        #acc_diff += desc_diff
-        print(desc_diff)
-        #if diff > 1e-6:
-        #    raise RuntimeError(f"{key} mismatch: {diff}")
+        acc_diff = abs(da3_preds['descriptor'] - view_descriptors).sum()
+        if diff > 1e-6:
+            raise RuntimeError(f"{key} mismatch: {diff}")
 
         status = "PASS" if acc_diff < 1e-6 else "FAIL"
         assert status == "PASS"
