@@ -1,0 +1,217 @@
+from typing import List, Tuple
+from multiprocessing import Queue
+from dataclasses import dataclass
+from time import perf_counter
+import gc
+
+import cv2
+import numpy as np
+import torch
+import torch.multiprocessing as mp
+from PIL import Image
+from addict import Dict
+
+
+@dataclass
+class Frame:
+    id: int
+    stamp: float
+    img: Image.Image
+
+
+def cv2_to_pil(img: np.ndarray) -> Image.Image:
+    cv_frame_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    pil_frame = Image.fromarray(cv_frame_rgb)
+    return pil_frame
+
+
+def video_publisher(video_path: str, qout: Queue) -> None:
+    video = cv2.VideoCapture(video_path)
+    fps = video.get(cv2.CAP_PROP_FPS)
+    if not fps:
+        print("WARNING. Could not get FPS of the video. Defaulting to 30 fps")
+        fps = 30.0
+
+    frame_cnt = 0
+    while True:
+        ret, frame = video.read()
+        if not ret:
+            qout.put(None)
+            print("Finished playing video")
+            break
+        pil_img = cv2_to_pil(frame)
+        stamp = frame_cnt/fps
+        id = frame_cnt + 1
+        qout.put(Frame(id, stamp, pil_img))
+        frame_cnt += 1
+
+    video.release()
+
+
+class KeyFramesDetector:
+    def __init__(self):
+        self.last_descriptor: torch.Tensor|None = None
+        self.key_frames: List[int] = []
+
+    def __call__(
+        self,
+        frame_ids: List[int],
+        view_preds: Dict[str, torch.Tensor],
+        th: float=0.7
+    ) -> Tuple[List[int], Dict[str, torch.Tensor]]:
+        descriptors = view_preds.descriptor
+
+        idcs = []
+        kf_ids = []
+        if self.last_descriptor is None:
+            self.last_descriptor = descriptors[0].clone()
+            idcs.append(0)
+            kf_ids.append(frame_ids[0])
+
+        ref = self.last_descriptor
+        for i, desc in enumerate(descriptors):
+            sim = (desc @ ref).item()
+            if sim < th:
+                ref = desc
+                idcs.append(i)
+                kf_ids.append(frame_ids[i])
+        
+        if not idcs:
+            return [], {}
+        
+        self.last_descriptor = descriptors[idcs[-1]].clone()
+        self.key_frames += kf_ids
+
+        kf_preds = Dict()
+        for k in ('descriptor', 'images', 'patch_tokens'):
+            kf_preds[k] = view_preds[k][idcs]
+        
+        return kf_ids, kf_preds
+
+
+@dataclass
+class ViewToken:
+    frame_id: int
+    token: torch.Tensor
+    processed_img: torch.Tensor
+
+
+def video_processing(qin: Queue) -> None:
+    from src.models import get_model
+
+    model = get_model(
+        'vggt',
+        '/home/emmanuel/Desktop/tesis/Visual_Place_Recognition'
+    )
+
+
+    from src.storage import(
+        FrameRepository,
+        FIFOCache,
+        TensorRepository,
+        SoftLink
+    )
+
+    frames = FrameRepository('output/frames') #Frames and metadata in disk
+    keyframes_cp = SoftLink('output/keyframes', frames.root)
+    frames_cache = FIFOCache(60) #Last 60 frames in ram.
+    descriptors = TensorRepository('output/viewpreds/descriptors')
+    patch_tokens = TensorRepository('output/viewpreds/patch_tokens')
+    processed_imgs = TensorRepository('output/viewpreds/processed_imgs')
+    viewpreds_cache = FIFOCache(50)
+
+    to_encode_ids = [] #Ids to encode.
+    to_predict_ids = []
+    predicted_ids = []
+    keyframe_detector = KeyFramesDetector() #Detects if a frame is a new frame
+
+    while True:
+        #1. Append frames to a batch for encoding
+        frame: Frame = qin.get()
+        if frame is None:
+            break
+        #print(f"Received frame with id: {frame.id}")
+        _id = frames.append(frame.img, frame.stamp) #Save frame in disk
+        if _id != frame.id:
+            raise RuntimeError(f"Packet loss: ({frame.id}, {_id})")
+        frames_cache.append(frame.id, frame) #Add frame to cache
+        to_encode_ids.append(frame.id)
+
+        if len(to_encode_ids) < 10: #If the number of frames not encoded is not 10, receive another frame
+            continue
+
+        #2. Encode the batch
+        image_batch = [
+            frames_cache.get(id).img
+            for id in to_encode_ids
+        ]
+        start = perf_counter()
+        #print(f"Encoding {len(to_encode_ids)} images with ids: {to_encode_ids}")
+        view_preds = model.views_encoding(image_batch)
+        end = perf_counter()
+        #print(f"Took {end - start:.3f} seconds")
+        encoded_ids = to_encode_ids
+        to_encode_ids = []
+
+        #3. Keyframe selection
+        kf_ids, kf_preds = keyframe_detector(encoded_ids, view_preds)
+        if not kf_ids:
+            continue
+        print(f"Found new keyframes: {kf_ids}")
+        #Saving keyframes
+        for id in kf_ids:
+            path = frames.get_path(id)
+            keyframes_cp.copy(path)
+
+        #Saving filtered predictions in disk and cache
+        zip_iter = zip(kf_ids, kf_preds.patch_tokens, kf_preds.images, kf_preds.descriptor)
+        for frame_id, token, img, desc in zip_iter:
+            descriptors.append(frame_id, desc) #save in disk
+            patch_tokens.append(frame_id, token) #disk
+            processed_imgs.append(frame_id, img) #disk
+            view_pred = ViewToken(frame_id, token, img)
+            viewpreds_cache.append(frame_id, view_pred)#Ram
+        
+        del view_preds #Remove unused views
+        gc.collect()
+
+        to_predict_ids += kf_ids
+        if len(to_predict_ids) < 10:
+            continue
+        #3 Chunk Sequence prediction
+        #Preparing chunk
+        chunk_ids = predicted_ids[-10:] + to_predict_ids #Ids of frames to chunk
+        chunk_tokens: List[ViewToken] = [viewpreds_cache.get(id) for id in chunk_ids]
+        chunk_preds = Dict()
+        chunk_preds.patch_tokens = torch.stack([token.token for token in chunk_tokens])
+        chunk_preds.images = torch.stack([token.processed_img for token in chunk_tokens])
+        print(f"Processing sequence of size {len(chunk_ids)} with ids: {predicted_ids[-10:]}, {to_predict_ids}")
+        start = perf_counter()
+        preds = model.chunk_prediction(chunk_preds)
+        end = perf_counter()
+        print(f"Took {end - start:.3f} seconds")
+        predicted_ids += to_predict_ids
+        to_predict_ids = []
+        
+
+def main():
+    mp.set_start_method("spawn")
+    q_frames = mp.Queue(maxsize=10)
+    p_publisher = mp.Process(
+        target=video_publisher,
+        args=("/home/emmanuel/Downloads/cimat_loop.mp4", q_frames)
+    )
+    p_processing = mp.Process(
+        target=video_processing,
+        args=(q_frames,)
+    )
+
+    p_publisher.start()
+    p_processing.start()
+
+    p_publisher.join()
+    p_processing.join()
+
+
+if __name__ == '__main__':
+    main()
