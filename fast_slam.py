@@ -1,4 +1,4 @@
-from typing import List, Tuple
+from typing import List, Tuple, Any
 from multiprocessing import Queue
 from dataclasses import dataclass
 from time import perf_counter
@@ -25,7 +25,7 @@ def cv2_to_pil(img: np.ndarray) -> Image.Image:
     return pil_frame
 
 
-def video_publisher(video_path: str, qout: Queue) -> None:
+def video_publisher(video_path: str, frame_q: Queue) -> None:
     video = cv2.VideoCapture(video_path)
     fps = video.get(cv2.CAP_PROP_FPS)
     if not fps:
@@ -36,13 +36,13 @@ def video_publisher(video_path: str, qout: Queue) -> None:
     while True:
         ret, frame = video.read()
         if not ret:
-            qout.put(None)
+            frame_q.put(None)
             print("Finished playing video")
             break
         pil_img = cv2_to_pil(frame)
         stamp = frame_cnt/fps
         id = frame_cnt + 1
-        qout.put(Frame(id, stamp, pil_img))
+        frame_q.put(Frame(id, stamp, pil_img))
         frame_cnt += 1
 
     video.release()
@@ -57,7 +57,7 @@ class KeyFramesDetector:
         self,
         frame_ids: List[int],
         view_preds: Dict[str, torch.Tensor],
-        th: float=0.7
+        th: float=0.6
     ) -> Tuple[List[int], Dict[str, torch.Tensor]]:
         descriptors = view_preds.descriptor
 
@@ -96,14 +96,13 @@ class ViewToken:
     processed_img: torch.Tensor
 
 
-def video_processing(qin: Queue) -> None:
+def video_processing(frame_q: Queue, preds_q: Queue) -> None:
     from src.models import get_model
 
     model = get_model(
-        'vggt',
+        'da3-small',
         '/home/emmanuel/Desktop/tesis/Visual_Place_Recognition'
     )
-
 
     from src.storage import(
         FrameRepository,
@@ -127,8 +126,9 @@ def video_processing(qin: Queue) -> None:
 
     while True:
         #1. Append frames to a batch for encoding
-        frame: Frame = qin.get()
+        frame: Frame = frame_q.get()
         if frame is None:
+            preds_q.put(None)
             break
         #print(f"Received frame with id: {frame.id}")
         _id = frames.append(frame.img, frame.stamp) #Save frame in disk
@@ -192,25 +192,77 @@ def video_processing(qin: Queue) -> None:
         print(f"Took {end - start:.3f} seconds")
         predicted_ids += to_predict_ids
         to_predict_ids = []
-        
+
+        preds['ids'] = np.asarray(chunk_ids, dtype=np.uint32)
+        preds_q.put(preds)
+
+
+def prediction_alignment(predictions_q: Queue) -> None:
+    import os
+    from src.sim3 import VggtlongAlign, unproject_depth_map_to_point_map
+    registered_ids = []
+    prev_preds: Dict[str, np.ndarray] = {}
+    chunk_cnt = 0
+    while True:
+        curr_preds = predictions_q.get()
+        if curr_preds is None:
+            break
+
+        if not prev_preds:
+            prev_preds = curr_preds
+            registered_ids += list(curr_preds.ids)
+            continue
+
+        curr_preds.world_points = unproject_depth_map_to_point_map(
+            curr_preds.depth,
+            curr_preds.intrinsics,
+            curr_preds.extrinsics
+        )
+        path = f'./preds/{chunk_cnt}.npz'
+        os.makedirs('preds', exist_ok=True)
+        np.savez(path, **curr_preds)
+
+        continue
+        start = perf_counter()
+        print(f"Aligning scenes with ids {prev_preds.ids}, {curr_preds.ids}")
+        curr_preds = VggtlongAlign().fit_transform(prev_preds, curr_preds)
+        curr_preds.world_points = unproject_depth_map_to_point_map(
+            curr_preds.depth,
+            curr_preds.intrinsics,
+            curr_preds.extrinsics
+        )
+        end = perf_counter()
+        print(f"Took {end - start:.4f} seconds")
+        prev_preds = curr_preds
+        registered_ids += list(curr_preds.ids)
+
+        chunk_cnt += 1
+
 
 def main():
     mp.set_start_method("spawn")
     q_frames = mp.Queue(maxsize=10)
+    q_preds = mp.Queue(maxsize=8)
     p_publisher = mp.Process(
         target=video_publisher,
         args=("/home/emmanuel/Downloads/cimat_loop.mp4", q_frames)
     )
     p_processing = mp.Process(
         target=video_processing,
-        args=(q_frames,)
+        args=(q_frames, q_preds)
+    )
+    p_alignment = mp.Process(
+        target=prediction_alignment,
+        args=(q_preds, )
     )
 
     p_publisher.start()
     p_processing.start()
+    p_alignment.start()
 
     p_publisher.join()
     p_processing.join()
+    p_alignment.join()
 
 
 if __name__ == '__main__':
