@@ -20,18 +20,18 @@ def vggtlong_est_scenes_transform(
     tgt_preds: Dict[str, np.ndarray]
 ) -> Tuple[float, np.ndarray, np.ndarray]:
     src_ids = list(src_preds.ids)
-    dst_ids = list(src_preds.ids)
+    tgt_ids = list(tgt_preds.ids)
 
-    common_ids = set(src_ids).intersection(set(dst_ids))
+    common_ids = set(src_ids).intersection(set(tgt_ids))
     if not common_ids:
         raise ValueError("No overlapping views")
     
     src_idcs = [src_ids.index(id) for id in common_ids]
-    dst_idcs = [dst_ids.index(id) for id in common_ids]
+    dst_idcs = [tgt_ids.index(id) for id in common_ids]
 
-    src_tgt = src_preds.depth_conf[src_idcs]
+    src_conf = src_preds.depth_conf[src_idcs]
     tgt_conf = tgt_preds.depth_conf[dst_idcs]
-    common_mask = get_conf_mask(src_tgt) & get_conf_mask(tgt_conf)
+    common_mask = get_conf_mask(src_conf) & get_conf_mask(tgt_conf)
 
     src_point = unproject_depth_map_to_point_map(
         src_preds.depth,
@@ -48,7 +48,7 @@ def vggtlong_est_scenes_transform(
     tgt_point = tgt_point[dst_idcs][common_mask]
 
     initial_weights = np.min(
-        np.vstack((src_tgt[common_mask], tgt_conf[common_mask])),
+        np.vstack((src_conf[common_mask], tgt_conf[common_mask])),
         axis=0
     )
     s, R, t = robust_weighted_estimate_sim3(
@@ -105,5 +105,5 @@ class VggtlongAlign(Sim3Align):
         tgt_preds: Dict[str, np.ndarray],
         src_preds: Dict[str, np.ndarray],
     ) -> "VggtlongAlign":
-        self.sim3 = vggtlong_est_scenes_transform(tgt_preds, src_preds)
+        self.sim3 = vggtlong_est_scenes_transform(src_preds, tgt_preds)
         return self
