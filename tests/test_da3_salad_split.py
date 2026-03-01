@@ -1,5 +1,5 @@
 import sys, os
-from typing import Iterable
+from typing import Iterable, Dict
 from argparse import ArgumentParser
 import random
 
@@ -9,7 +9,7 @@ from PIL import Image
 
 from test_utils import ImgDirDataset
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-from src.models.da3_salad import Da3SaladSplit
+from src.models.da3_salad import Da3SaladSplit, Prediction
 
 
 def parse_args() -> dict:
@@ -20,6 +20,23 @@ def parse_args() -> dict:
     args = parser.parse_args()
 
     return args
+
+
+def compare_predictions(
+    pred_dict: Dict[str, np.ndarray],
+    pred_obj: Prediction,
+) -> float:
+    dict_keys = ('depth', 'conf', 'extrinsics', 'intrinsics', 'processed_images')
+    obj_keys = ('depth', 'depth_conf', 'extrinsic', 'intrinsic', 'images')
+    acc_diff = 0.0
+    for dict_k, obj_k in zip(dict_keys, obj_keys):
+        if not dict_k in pred_dict:
+            raise KeyError(dict_k)
+        diff = np.abs(pred_dict[dict_k] - getattr(pred_obj, obj_k)).sum()
+        if diff > 1e-6:
+            raise RuntimeError(f"{dict_k} mismatch: {acc_diff}")
+        acc_diff += diff
+    return acc_diff
 
 
 def compare_pipelines(
@@ -48,27 +65,14 @@ def compare_pipelines(
         preds = da3_salad_split.heads_prediction(perseq_latent)
         chunk_preds = da3_salad_split.chunk_prediction(perview_preds) #This are the two las stages aggregated.
 
-        shared_keys = set([
-            k
-            for k in da3_preds.keys()
-            if k in preds
-        ])
+        acc_diff = compare_predictions(da3_preds, preds)
+        acc_diff += compare_predictions(da3_preds, chunk_preds)
 
-        acc_diff = 0.0
-        for key in shared_keys:
-            diff = np.abs(da3_preds[key] - preds[key]).sum()
-            if diff > 1e-6:
-                raise RuntimeError(f"{key} mismatch: {diff}")
-            acc_diff += diff
-            diff = np.abs(da3_preds[key] - chunk_preds[key]).sum()
-            if diff > 1e-6:
-                raise RuntimeError(f"{key} mismatch: {diff}")
-            acc_diff += diff
-
-        view_descriptors = perview_preds['descriptor'].numpy()
-        acc_diff = abs(da3_preds['descriptor'] - view_descriptors).sum()
+        view_descriptors = perview_preds.descriptors.numpy()
+        diff = abs(da3_preds['descriptor'] - view_descriptors).sum()
         if diff > 1e-6:
-            raise RuntimeError(f"{key} mismatch: {diff}")
+            raise RuntimeError(f"descriptor mismatch: {diff}")
+        acc_diff += diff
 
         status = "PASS" if acc_diff < 1e-6 else "FAIL"
         assert status == "PASS"

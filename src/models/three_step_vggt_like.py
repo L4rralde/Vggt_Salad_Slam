@@ -5,6 +5,8 @@ from PIL import Image
 from torch import Tensor
 from numpy import ndarray
 
+from .dtypes import ViewPrediction, Prediction
+
 
 class VggtLikeSaladSplit(ABC):
     @abstractmethod
@@ -12,7 +14,7 @@ class VggtLikeSaladSplit(ABC):
         pass
 
     @abstractmethod
-    def views_encoding(self, img_list: List[Image.Image], **kwargs) -> Dict[str, Tensor]:
+    def views_encoding(self, img_list: List[Image.Image], **kwargs) -> ViewPrediction:
         pass
 
     @abstractmethod
@@ -20,9 +22,9 @@ class VggtLikeSaladSplit(ABC):
         pass
 
     @abstractmethod
-    def heads_prediction(self, seq_preds: Dict[str, Tensor], **kwargs) -> Dict[str, ndarray]:
+    def heads_prediction(self, seq_preds: Dict[str, Tensor], **kwargs) -> Prediction:
         pass
 
     @abstractmethod
-    def chunk_prediction(self, view_preds: Dict[str, Tensor], **kwargs) -> Dict[str, ndarray]:
+    def chunk_prediction(self, view_preds: Dict[str, Tensor], **kwargs) -> Prediction:
         pass

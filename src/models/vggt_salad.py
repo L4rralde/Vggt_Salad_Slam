@@ -1,10 +1,12 @@
-from typing import List
+from typing import List, Dict
 
 from PIL import Image
 import torch
 from torchvision.transforms.functional import to_tensor
 import numpy as np
 from addict import Dict
+
+from .dtypes import ViewPrediction, Prediction
 
 
 class VggtSaladSplit:
@@ -50,10 +52,11 @@ class VggtSaladSplit:
         assert n_desc == n, "Sequence lenght mismatch"
         #Preparing predictions for future steps.
 
-        view_preds = Dict()
-        view_preds['images'] = images.squeeze(0).cpu() # n x c x h x w
-        view_preds['patch_tokens'] = patch_tokens.cpu() # n x ...
-        view_preds['descriptor'] = descriptor.cpu() # n x d
+        view_preds = ViewPrediction(
+            images.squeeze(0).cpu(),
+            patch_tokens.cpu(),
+            descriptor.cpu()
+        )
 
         torch.cuda.empty_cache()
         return view_preds
@@ -102,7 +105,13 @@ class VggtSaladSplit:
                 filetered_preds[key] = value.cpu().numpy().squeeze(0)
 
         torch.cuda.empty_cache()
-        return filetered_preds
+        return Prediction(
+            filetered_preds['depth'],
+            filetered_preds['depth_conf'],
+            filetered_preds['extrinsic'],
+            filetered_preds['intrinsic'],
+            filetered_preds['images']
+        )
 
     def chunk_prediction(self, view_preds: Dict[str, torch.Tensor]) -> Dict[str, np.ndarray]:
         dtype = torch.bfloat16 if torch.cuda.get_device_capability()[0] >= 8 else torch.float16
@@ -138,4 +147,10 @@ class VggtSaladSplit:
                 filetered_preds[key] = value.cpu().numpy().squeeze(0)
 
         torch.cuda.empty_cache()
-        return filetered_preds
+        return Prediction(
+            filetered_preds['depth'],
+            filetered_preds['depth_conf'],
+            filetered_preds['extrinsic'],
+            filetered_preds['intrinsic'],
+            filetered_preds['images']
+        )

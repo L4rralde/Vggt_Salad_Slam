@@ -1,7 +1,9 @@
 import sys, os
+from typing import Dict
 from typing import Iterable
 from argparse import ArgumentParser
 import random
+from dataclasses import asdict
 
 import numpy as np
 import torch
@@ -9,7 +11,8 @@ from PIL import Image
 
 from test_utils import ImgDirDataset
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-from src.models.vggt_salad import VggtSaladSplit
+from src.models.vggt_salad import VggtSaladSplit, Prediction
+
 
 
 def parse_args() -> dict:
@@ -20,6 +23,20 @@ def parse_args() -> dict:
     args = parser.parse_args()
 
     return args
+
+
+def compare_predictions(
+    vggt_preds: Dict[str, np.ndarray],
+    vggt_salad_preds: Prediction
+) -> float:
+    vggt_salad_preds = asdict(vggt_salad_preds)
+    acc_diff = 0
+    for k in vggt_salad_preds.keys():
+        diff = np.abs(vggt_preds[k] - vggt_salad_preds[k]).sum()
+        if diff > 1e-6:
+            raise RuntimeError(f"{k} mismatch: {diff}")
+        acc_diff += diff
+    return acc_diff
 
 
 def compare_pipelines(
@@ -48,27 +65,11 @@ def compare_pipelines(
         preds = vggt_salad_split.heads_prediction(perseq_latent)
         chunk_preds = vggt_salad_split.chunk_prediction(perview_preds) #This are the two las stages aggregated.
 
-        shared_keys = set([
-            k
-            for k in vggt_preds.keys()
-            if k in preds
-        ])
-
-        acc_diff = 0.0
-        for key in shared_keys:
-            diff = np.abs(vggt_preds[key] - preds[key]).sum()
-            if diff > 1e-6:
-                raise RuntimeError(f"{key} mismatch: {diff}")
-            acc_diff += diff
-            diff = np.abs(vggt_preds[key] - chunk_preds[key]).sum()
-            if diff > 1e-6:
-                raise RuntimeError(f"{key} mismatch: {diff}")
-            acc_diff += diff
+        acc_diff = compare_predictions(vggt_preds, preds)
+        acc_diff += compare_predictions(vggt_preds, chunk_preds)
         
-        view_descriptors = perview_preds['descriptor'].numpy()
+        view_descriptors = perview_preds.descriptors.numpy()
         acc_diff += abs(vggt_preds['descriptor'] - view_descriptors).sum()
-        if diff > 1e-6:
-            raise RuntimeError(f"{key} mismatch: {diff}")
 
         status = "PASS" if acc_diff < 1e-6 else "FAIL"
         assert status == "PASS"

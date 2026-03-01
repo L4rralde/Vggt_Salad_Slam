@@ -1,8 +1,4 @@
-from typing import List
-from dataclasses import dataclass
-
 import numpy as np
-from addict import Dict
 from scipy.optimize import minimize
 from scipy.special import huber
 
@@ -31,9 +27,9 @@ def closed_form_se3_inv(se3_mat):
 
 
 def get_conf_mask(conf):
-    lower = np.percentile(conf, 20)
+    lower = np.percentile(conf, 40)
     upper = np.percentile(conf, 80)
-    conf_thresh = min(max(1.01, lower), upper)
+    conf_thresh = min(max(1.05, lower), upper)
     mask = (conf > conf_thresh)
 
     return mask
@@ -70,7 +66,7 @@ def depth_to_pointmap(
     K = intrinsic
     K_inv = np.linalg.inv(K)
 
-    H, W = depth.shape
+    H, W = depth.shape[:2]
 
     us, vs = np.meshgrid(np.arange(W), np.arange(H))
     ones = np.ones_like(us)

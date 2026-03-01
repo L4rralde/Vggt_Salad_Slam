@@ -1,8 +1,8 @@
 import os
-from typing import List, Tuple, Any
+from typing import List, Tuple
 from multiprocessing import Queue
-from dataclasses import dataclass
-from time import perf_counter
+from dataclasses import dataclass, asdict
+from time import perf_counter, sleep
 import gc
 
 import cv2
@@ -11,6 +11,8 @@ import torch
 import torch.multiprocessing as mp
 from PIL import Image
 from addict import Dict
+
+from src.models import ViewPrediction, Prediction
 
 
 @dataclass
@@ -30,6 +32,7 @@ def pil_to_cv2(img: Image.Image) -> np.ndarray:
     return np.array(pil_data)[:, :, ::-1]
 
 def video_publisher(video_path: str, frame_q: Queue) -> None:
+    sleep(20)
     video = cv2.VideoCapture(video_path)
     fps = video.get(cv2.CAP_PROP_FPS)
     if not fps:
@@ -65,10 +68,10 @@ class KeyFramesDetector:
     def __call__(
         self,
         frame_ids: List[int],
-        view_preds: Dict[str, torch.Tensor],
+        view_preds: ViewPrediction,
         th: float=0.7
-    ) -> Tuple[List[int], Dict[str, torch.Tensor]]:
-        descriptors = view_preds.descriptor
+    ) -> Tuple[List[int], ViewPrediction]:
+        descriptors = view_preds.descriptors
 
         idcs = []
         kf_ids = []
@@ -91,10 +94,12 @@ class KeyFramesDetector:
         self.last_descriptor = descriptors[idcs[-1]].clone()
         self.key_frames += kf_ids
 
-        kf_preds = Dict()
-        for k in ('descriptor', 'images', 'patch_tokens'):
-            kf_preds[k] = view_preds[k][idcs]
-        
+        kf_preds = ViewPrediction(
+            view_preds.images[idcs],
+            view_preds.patch_tokens[idcs],
+            view_preds.descriptors[idcs]            
+        )
+
         return kf_ids, kf_preds
 
 
@@ -188,7 +193,7 @@ def video_processing(frame_q: Queue, kframes_q: Queue, preds_q: Queue) -> None:
             keyframes_cp.copy(path) #Save
 
         #Saving filtered predictions in disk and cache
-        zip_iter = zip(kf_ids, kf_preds.patch_tokens, kf_preds.images, kf_preds.descriptor)
+        zip_iter = zip(kf_ids, kf_preds.patch_tokens, kf_preds.images, kf_preds.descriptors)
         for frame_id, token, img, desc in zip_iter:
             descriptors.append(frame_id, desc) #save in disk
             patch_tokens.append(frame_id, token) #disk
@@ -217,7 +222,7 @@ def video_processing(frame_q: Queue, kframes_q: Queue, preds_q: Queue) -> None:
         predicted_ids += to_predict_ids
         to_predict_ids = []
 
-        preds['ids'] = np.asarray(chunk_ids, dtype=np.uint32)
+        preds.ids = np.asarray(chunk_ids, dtype=np.uint32)
         if preds_q.full():
             print("[WARNING] preds_q is full")
         preds_q.put(preds)
@@ -244,7 +249,7 @@ def prediction_aligning(predictions_q: Queue) -> None:
         prev_preds = curr_preds
         registered_ids += list(curr_preds.ids)
         path = f'./preds/{chunk_cnt}.npz'
-        np.savez(path, **curr_preds)
+        np.savez(path, **asdict(curr_preds))
 
         chunk_cnt += 1
 

@@ -6,6 +6,8 @@ import torch
 from PIL import Image
 from addict import Dict
 
+from .dtypes import ViewPrediction, Prediction
+
 
 class Da3SaladSplit:
     def __init__(self, vpr_repo: str, da3_config: str='giant', device: str='cuda') -> None:
@@ -52,14 +54,13 @@ class Da3SaladSplit:
             feats, cls = self.backbone._format_output_for_salad(output, feat_layer)
             descriptor = self.model.aggregator((feats, cls))
 
-        output.pop('aux')
-        output.pop('aux_cls')
-        output['images'] = imgs_cpu
-        output['patch_tokens'] = x.squeeze(0).cpu()
-        output['descriptor'] = descriptor.cpu()
         torch.cuda.empty_cache()
 
-        return output
+        return ViewPrediction(
+            imgs_cpu,
+            x.squeeze(0).cpu(),
+            descriptor.cpu()
+        )
 
     def sequence_encoding(self, view_preds: Dict[str, torch.Tensor], **kwargs) -> Dict[str, torch.Tensor]:
         imgs_cpu = view_preds.images
@@ -104,7 +105,13 @@ class Da3SaladSplit:
             gc.collect()
         torch.cuda.empty_cache()
 
-        return output
+        return Prediction(
+            output['depth'],
+            output['depth_conf'],
+            output['extrinsics'],
+            output['intrinsics'],
+            output['processed_images']
+        )
 
     def chunk_prediction(self, view_preds: Dict[str, torch.Tensor], **kwargs) -> Dict[str, np.ndarray]:
         imgs_cpu = view_preds.images
@@ -130,4 +137,10 @@ class Da3SaladSplit:
             gc.collect()
         torch.cuda.empty_cache()
 
-        return output
+        return Prediction(
+            output['depth'],
+            output['depth_conf'],
+            output['extrinsics'],
+            output['intrinsics'],
+            output['processed_images']
+        )

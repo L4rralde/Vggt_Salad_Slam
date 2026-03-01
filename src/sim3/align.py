@@ -1,12 +1,13 @@
-from typing import Tuple
+from typing import Tuple, Any
 from abc import abstractmethod
+from copy import copy
 
 import numpy as np
 from addict import Dict
 
+
 from .utils import(
     get_conf_mask,
-    depth_to_pointmap,
     closed_form_se3_inv,
     as_homogeneous,
     sim3_transform_mat,
@@ -35,13 +36,13 @@ def vggtlong_est_scenes_transform(
 
     src_point = unproject_depth_map_to_point_map(
         src_preds.depth,
-        src_preds.intrinsics,
-        src_preds.extrinsics
+        src_preds.intrinsic,
+        src_preds.extrinsic
     )
     tgt_point = unproject_depth_map_to_point_map(
         tgt_preds.depth,
-        tgt_preds.intrinsics,
-        tgt_preds.extrinsics
+        tgt_preds.intrinsic,
+        tgt_preds.extrinsic
     )
 
     src_point = src_point[src_idcs][common_mask]
@@ -82,19 +83,19 @@ class Sim3Align:
 
     def transform(self, preds: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
         s, R, t = self.sim3
-        new_preds = Dict(preds)
+        new_preds = copy(preds)
         new_preds.depth = s*preds.depth
         
         se3_t = sim3_transform_mat(1.0, R, t)
         se3_t_inv = closed_form_se3_inv(se3_t)
         
         new_extrinsics = []
-        for extrinsic in preds.extrinsics:
+        for extrinsic in preds.extrinsic:
             extrinsic = as_homogeneous(extrinsic).copy()
             extrinsic[:3, 3] *= s
             new_extrinsic = (extrinsic @ se3_t_inv)[:3]
             new_extrinsics.append(new_extrinsic[None, ...])
-        new_preds.extrinsics = np.vstack(new_extrinsics)
+        new_preds.extrinsic = np.vstack(new_extrinsics)
 
         return new_preds
 

@@ -1,4 +1,5 @@
 from .three_step_vggt_like import VggtLikeSaladSplit
+from .dtypes import ViewPrediction, Prediction
 
 
 def get_model(
