@@ -277,7 +277,7 @@ def prediction_aligning(predictions_q: Queue) -> None:
 
 
 def main():
-    mp.set_start_method("spawn")
+    mp.set_start_method("fork")
     q_frames = mp.Queue(256)
     q_preds = mp.Queue(maxsize=8)
     q_kframes = mp.Queue(maxsize=8)
