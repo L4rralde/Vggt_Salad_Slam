@@ -32,14 +32,15 @@ def pil_to_cv2(img: Image.Image) -> np.ndarray:
     return np.array(pil_data)[:, :, ::-1]
 
 def video_publisher(video_path: str, frame_q: Queue) -> None:
-    sleep(20)
     video = cv2.VideoCapture(video_path)
     fps = video.get(cv2.CAP_PROP_FPS)
     if not fps:
         print("WARNING. Could not get FPS of the video. Defaulting to 30 fps")
         fps = 30.0
-
+    period = 1.0/fps
     frame_cnt = 0
+    sleep(20)
+    print(f"Playing video at {fps} FPS")
     while True:
         ret, frame = video.read()
         if not ret:
@@ -53,11 +54,12 @@ def video_publisher(video_path: str, frame_q: Queue) -> None:
             print("[WARNING], frame_q is full.")
         frame_q.put(Frame(id, stamp, pil_img))
         frame_cnt += 1
-        cv2.imshow('video', frame)
-        cv2.waitKey(25)
+        sleep(period)
+        #cv2.imshow('video', frame)
+        #cv2.waitKey(25)
 
     video.release()
-    cv2.destroyWindow("video")
+    #cv2.destroyWindow("video")
 
 
 class KeyFramesDetector:
@@ -69,7 +71,7 @@ class KeyFramesDetector:
         self,
         frame_ids: List[int],
         view_preds: ViewPrediction,
-        th: float=0.7
+        th: float=0.75
     ) -> Tuple[List[int], ViewPrediction]:
         descriptors = view_preds.descriptors
 
@@ -126,7 +128,7 @@ def video_processing(frame_q: Queue, kframes_q: Queue, preds_q: Queue) -> None:
     print("Loading model...")
     start = perf_counter()
     model = get_model(
-        'da3-small',
+        'da3-base',
         '/home/emmanuel/Desktop/tesis/Visual_Place_Recognition'
     )
     end = perf_counter()
@@ -141,31 +143,32 @@ def video_processing(frame_q: Queue, kframes_q: Queue, preds_q: Queue) -> None:
 
     frames = FrameRepository('output/frames') #Frames and metadata in disk
     keyframes_cp = SoftLink('output/keyframes', frames.root)
-    frames_cache = FIFOCache(128)
+    frames_cache = FIFOCache(64)
     descriptors = TensorRepository('output/viewpreds/descriptors')
-    patch_tokens = TensorRepository('output/viewpreds/patch_tokens')
-    processed_imgs = TensorRepository('output/viewpreds/processed_imgs')
-    viewpreds_cache = FIFOCache(64)
+    #patch_tokens = TensorRepository('output/viewpreds/patch_tokens')
+    #processed_imgs = TensorRepository('output/viewpreds/processed_imgs')
+    viewpreds_cache = FIFOCache(32)
 
     to_encode_ids = [] #Ids to encode.
     to_predict_ids = []
     predicted_ids = []
     keyframe_detector = KeyFramesDetector() #Detects if a frame is a new frame
-
     while True:
         #1. Append frames to a batch for encoding
         frame: Frame = frame_q.get()
-        if frame is None:
+        if frame is None: #Check if video has not finished
             preds_q.put(None)
             kframes_q.put(None)
             break
+
+        #This block takes 0.01 seconds
         _id = frames.append(frame.img, frame.stamp) #Save frame in disk
         if _id != frame.id:
             raise RuntimeError(f"Packet loss: ({frame.id}, {_id})")
         frames_cache.append(frame.id, frame) #Add frame to cache
         to_encode_ids.append(frame.id)
-
-        if len(to_encode_ids) < 32: #If the number of frames not encoded is not 10, receive another frame
+        
+        if len(to_encode_ids) < 32: #If the number of frames not encoded is not 32, receive another frame
             continue
 
         #2. Encode the batch
@@ -174,13 +177,23 @@ def video_processing(frame_q: Queue, kframes_q: Queue, preds_q: Queue) -> None:
             for id in to_encode_ids
         ]
         start = perf_counter()
+        #Can't achieve real time @ 30FPS
+        #With VGGT-SALAD Encoding almost takes (in average) 0.27 seconds.
+        #Wait period between frames @30FPS is 0.33. So, only 0.06 seconds remain.
+        # Preprocesing 32 frames takes: .22 seconds.
+        # Moving data to cpu takes .12 seconds.
+        # Calling torch.cuda.empty_cache() takes 0.12 seconds
+        # Only cpu preprocessing PIL-to-PIL takes 5ms per Image. For VGGT-SALAD. Check for da3-salad
+        #     Hence it takes 0.06 seconds to move 32 images to gpu.
         view_preds = model.views_encoding(image_batch)
         end = perf_counter()
+        print(f"Encoding of {len(image_batch)} frames took {end - start:.2f} seconds.")
         encoded_ids = to_encode_ids
         to_encode_ids = []
 
         #3. Keyframe selection
-        kf_ids, kf_preds = keyframe_detector(encoded_ids, view_preds)
+        #This is fast. Not a bottleneck. Approx 50ns per frame.
+        kf_ids, kf_preds = keyframe_detector(encoded_ids, view_preds) 
         if not kf_ids:
             continue
 
@@ -190,19 +203,26 @@ def video_processing(frame_q: Queue, kframes_q: Queue, preds_q: Queue) -> None:
             #kf = frames_cache.get(id)
             #kframes_q.put(kf) #Publish
             path = frames.get_path(id)
-            keyframes_cp.copy(path) #Save
+            #save keyframe. #In average takes 500ns per keyframe. Not a bottleneck
+            keyframes_cp.copy(path)
 
-        #Saving filtered predictions in disk and cache
+        #Saving filtered predictions in disk and cache. 
+        #This is a bottleneck. takes 0.17 per individual key frame.
+        #Does not scale linearly.
+        #Due to disk operations, it may be better to use multiprocssing here.
+        start = perf_counter()
         zip_iter = zip(kf_ids, kf_preds.patch_tokens, kf_preds.images, kf_preds.descriptors)
         for frame_id, token, img, desc in zip_iter:
             descriptors.append(frame_id, desc) #save in disk
-            patch_tokens.append(frame_id, token) #disk
-            processed_imgs.append(frame_id, img) #disk
-            view_pred = ViewToken(frame_id, token, img)
-            viewpreds_cache.append(frame_id, view_pred)#Ram
+            #patch_tokens.append(frame_id, token) #disk
+            #processed_imgs.append(frame_id, img) #disk
+            viewpreds_cache.append(frame_id, ViewToken(frame_id, token, img))#Ram
         
-        del view_preds #Remove unused views
-        gc.collect()
+        #Both explicitly deleting a variable and calling the gc is slow.
+        #del view_preds #Remove unused views 
+        #gc.collect()
+        end = perf_counter()
+        print(f"Saving and caching {len(kf_ids)} keyframes pred took {end - start:.4f} seconds")
 
         to_predict_ids += kf_ids
         if len(to_predict_ids) < 4:
@@ -210,12 +230,12 @@ def video_processing(frame_q: Queue, kframes_q: Queue, preds_q: Queue) -> None:
         #3 Chunk Sequence prediction
         #Preparing chunk
         chunk_ids = predicted_ids[-4:] + to_predict_ids #Ids of frames to chunk
+        print(f"Processing sequence of size {len(chunk_ids)}...")
+        start = perf_counter()
         chunk_tokens: List[ViewToken] = [viewpreds_cache.get(id) for id in chunk_ids]
         chunk_preds = Dict()
         chunk_preds.patch_tokens = torch.stack([token.token for token in chunk_tokens])
         chunk_preds.images = torch.stack([token.processed_img for token in chunk_tokens])
-        print(f"Processing sequence of size {len(chunk_ids)}...")
-        start = perf_counter()
         preds = model.chunk_prediction(chunk_preds)
         end = perf_counter()
         print(f"Sequence prediction took {end - start:.3f} seconds")
