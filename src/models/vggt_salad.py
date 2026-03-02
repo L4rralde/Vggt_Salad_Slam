@@ -19,7 +19,6 @@ class VggtSaladSplit:
             vpr_repo
         )
         self.model = self.model.eval().to(device)
-        self.last_keyframe_descriptor: np.ndarray|None = None
 
     @property
     def backbone(self) -> torch.nn.Module:
@@ -29,7 +28,7 @@ class VggtSaladSplit:
         return torch.stack([
             to_tensor(self.backbone.preprocess_image(img))
             for img in pil_img_list
-        ])
+        ]) #I can do this in parallel.
 
     def views_encoding(self, pil_img_list: List[Image.Image]) -> Dict[str, torch.Tensor]:
         #Image preprocessing and input checking
@@ -58,7 +57,7 @@ class VggtSaladSplit:
             descriptor.cpu()
         )
 
-        torch.cuda.empty_cache()
+        #torch.cuda.empty_cache()
         return view_preds
 
     def sequence_encoding(self, view_preds: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
@@ -72,7 +71,7 @@ class VggtSaladSplit:
         seq_preds = Dict()
         seq_preds['seq_tokens_list'] = [t.cpu() for t in aggregated_tokens_list]
         seq_preds['images'] = view_preds.images
-        torch.cuda.empty_cache()
+        #torch.cuda.empty_cache()
 
         return seq_preds
 
@@ -104,7 +103,7 @@ class VggtSaladSplit:
             if isinstance(value, torch.Tensor):
                 filetered_preds[key] = value.cpu().numpy().squeeze(0)
 
-        torch.cuda.empty_cache()
+        #torch.cuda.empty_cache()
         return Prediction(
             filetered_preds['depth'],
             filetered_preds['depth_conf'],
@@ -146,7 +145,7 @@ class VggtSaladSplit:
             if isinstance(value, torch.Tensor):
                 filetered_preds[key] = value.cpu().numpy().squeeze(0)
 
-        torch.cuda.empty_cache()
+        #torch.cuda.empty_cache()
         return Prediction(
             filetered_preds['depth'],
             filetered_preds['depth_conf'],

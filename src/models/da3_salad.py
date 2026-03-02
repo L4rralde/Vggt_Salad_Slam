@@ -54,7 +54,7 @@ class Da3SaladSplit:
             feats, cls = self.backbone._format_output_for_salad(output, feat_layer)
             descriptor = self.model.aggregator((feats, cls))
 
-        torch.cuda.empty_cache()
+        #torch.cuda.empty_cache()
 
         return ViewPrediction(
             imgs_cpu,
@@ -80,7 +80,7 @@ class Da3SaladSplit:
             (f.cpu(), cam.cpu())
             for f, cam in feats
         )
-        torch.cuda.empty_cache()
+        #torch.cuda.empty_cache()
         return output
 
     def heads_prediction(self, seq_preds: Dict[str, torch.Tensor], **kwargs) -> Dict[str, np.ndarray]:
@@ -101,9 +101,9 @@ class Da3SaladSplit:
             if not isinstance(v, torch.Tensor):
                 continue
             output[k] = v.squeeze(0).cpu().numpy()
-            del v
-            gc.collect()
-        torch.cuda.empty_cache()
+            #del v
+            #gc.collect()
+        #torch.cuda.empty_cache()
 
         return Prediction(
             output['depth'],
@@ -133,9 +133,9 @@ class Da3SaladSplit:
             if not isinstance(v, torch.Tensor):
                 continue
             output[k] = v.squeeze(0).cpu().numpy()
-            del v
-            gc.collect()
-        torch.cuda.empty_cache()
+            #del v
+            #gc.collect()
+        #torch.cuda.empty_cache()
 
         return Prediction(
             output['depth'],
