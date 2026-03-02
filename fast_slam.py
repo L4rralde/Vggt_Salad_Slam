@@ -31,7 +31,7 @@ def pil_to_cv2(img: Image.Image) -> np.ndarray:
     pil_data = img.convert('RGB')
     return np.array(pil_data)[:, :, ::-1]
 
-def video_publisher(video_path: str, frame_q: Queue) -> None:
+def video_publisher(video_path: str, frame_q: Queue, model_ready: mp.Event) -> None:
     video = cv2.VideoCapture(video_path)
     fps = video.get(cv2.CAP_PROP_FPS)
     if not fps:
@@ -39,7 +39,7 @@ def video_publisher(video_path: str, frame_q: Queue) -> None:
         fps = 30.0
     period = 1.0/fps
     frame_cnt = 0
-    sleep(20)
+    model_ready.wait()
     print(f"Playing video at {fps} FPS")
     while True:
         ret, frame = video.read()
@@ -122,7 +122,7 @@ class ViewToken:
     processed_img: torch.Tensor
 
 
-def video_processing(frame_q: Queue, kframes_q: Queue, preds_q: Queue) -> None:
+def video_processing(frame_q: Queue, kframes_q: Queue, preds_q: Queue, model_ready: mp.Event) -> None:
     from src.models import get_model
 
     print("Loading model...")
@@ -153,6 +153,7 @@ def video_processing(frame_q: Queue, kframes_q: Queue, preds_q: Queue) -> None:
     to_predict_ids = []
     predicted_ids = []
     keyframe_detector = KeyFramesDetector() #Detects if a frame is a new frame
+    model_ready.set()
     while True:
         #1. Append frames to a batch for encoding
         frame: Frame = frame_q.get()
@@ -181,7 +182,8 @@ def video_processing(frame_q: Queue, kframes_q: Queue, preds_q: Queue) -> None:
         #With VGGT-SALAD Encoding almost takes (in average) 0.27 seconds.
         #Wait period between frames @30FPS is 0.33. So, only 0.06 seconds remain.
         # Preprocesing 32 frames takes: .22 seconds.
-        # Moving data to cpu takes .12 seconds.
+        # For DA3, they use a concurrent procedure:  
+        # Moving data to cpu takes .012 seconds. 10 Takes 0.05 seconds. 32 takes 0.15 seconds.
         # Calling torch.cuda.empty_cache() takes 0.12 seconds
         # Only cpu preprocessing PIL-to-PIL takes 5ms per Image. For VGGT-SALAD. Check for da3-salad
         #     Hence it takes 0.06 seconds to move 32 images to gpu.
@@ -279,13 +281,14 @@ def main():
     q_frames = mp.Queue(256)
     q_preds = mp.Queue(maxsize=8)
     q_kframes = mp.Queue(maxsize=8)
+    model_ready = mp.Event()
     p_publisher = mp.Process(
         target=video_publisher,
-        args=("/home/emmanuel/Downloads/cimat_loop.mp4", q_frames)
+        args=("/home/emmanuel/Downloads/cimat_loop.mp4", q_frames, model_ready)
     )
     p_processing = mp.Process(
         target=video_processing,
-        args=(q_frames, q_kframes, q_preds)
+        args=(q_frames, q_kframes, q_preds, model_ready)
     )
     p_aligning = mp.Process(
         target=prediction_aligning,
