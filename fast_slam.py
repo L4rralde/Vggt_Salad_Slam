@@ -65,49 +65,6 @@ def video_publisher(video_path: str, frame_q: Queue, model_ready: mp.Event) -> N
     #cv2.destroyWindow("video")
 
 
-class KeyFramesDetector:
-    def __init__(self):
-        self.last_descriptor: torch.Tensor|None = None
-        self.key_frames: List[int] = []
-
-    def __call__(
-        self,
-        frame_ids: List[int],
-        view_preds: ViewPrediction,
-        th: float=0.75
-    ) -> Tuple[List[int], ViewPrediction]:
-        descriptors = view_preds.descriptors
-
-        idcs = []
-        kf_ids = []
-        if self.last_descriptor is None:
-            self.last_descriptor = descriptors[0].clone()
-            idcs.append(0)
-            kf_ids.append(frame_ids[0])
-
-        ref = self.last_descriptor
-        for i, desc in enumerate(descriptors):
-            sim = (desc @ ref).item()
-            if sim < th:
-                ref = desc
-                idcs.append(i)
-                kf_ids.append(frame_ids[i])
-        
-        if not idcs:
-            return [], {}
-        
-        self.last_descriptor = descriptors[idcs[-1]].clone()
-        self.key_frames += kf_ids
-
-        kf_preds = ViewPrediction(
-            view_preds.images[idcs],
-            view_preds.patch_tokens[idcs],
-            view_preds.descriptors[idcs]            
-        )
-
-        return kf_ids, kf_preds
-
-
 def keyframe_publisher(keyframe_q: Queue) -> None:
     while True:
         kf: Frame|None = keyframe_q.get()
@@ -127,6 +84,7 @@ class ViewToken:
 
 def video_processing(frame_q: Queue, kframes_q: Queue, preds_q: Queue, model_ready: mp.Event) -> None:
     from src.models import get_model
+    from src.keyframes import KeyFramesDetector
 
     print("Loading model...")
     start = perf_counter()
