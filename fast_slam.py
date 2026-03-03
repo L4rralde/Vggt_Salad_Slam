@@ -2,7 +2,7 @@ import os
 from typing import List, Tuple
 from multiprocessing import Queue
 from dataclasses import dataclass, asdict
-from time import perf_counter, sleep
+from time import perf_counter, sleep, time
 import gc
 
 import cv2
@@ -41,6 +41,7 @@ def video_publisher(video_path: str, frame_q: Queue, model_ready: mp.Event) -> N
     frame_cnt = 0
     model_ready.wait()
     print(f"Playing video at {fps} FPS")
+    prev_time = time()
     while True:
         ret, frame = video.read()
         if not ret:
@@ -54,9 +55,11 @@ def video_publisher(video_path: str, frame_q: Queue, model_ready: mp.Event) -> N
             print("[WARNING], frame_q is full.")
         frame_q.put(Frame(id, stamp, pil_img))
         frame_cnt += 1
-        sleep(period)
         #cv2.imshow('video', frame)
         #cv2.waitKey(25)
+        while time() - prev_time < period:
+            sleep(period/20.0)
+        prev_time = time()
 
     video.release()
     #cv2.destroyWindow("video")
