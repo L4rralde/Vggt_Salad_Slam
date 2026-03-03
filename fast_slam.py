@@ -55,11 +55,11 @@ def video_publisher(video_path: str, frame_q: Queue, model_ready: mp.Event) -> N
         frame_q.put(Frame(id, stamp, pil_img))
         frame_cnt += 1
         sleep(period)
-        cv2.imshow('video', frame)
-        cv2.waitKey(25)
+        #cv2.imshow('video', frame)
+        #cv2.waitKey(25)
 
     video.release()
-    cv2.destroyWindow("video")
+    #cv2.destroyWindow("video")
 
 
 class KeyFramesDetector:
@@ -202,8 +202,8 @@ def video_processing(frame_q: Queue, kframes_q: Queue, preds_q: Queue, model_rea
         print(f"Found new keyframes: {kf_ids}")
         #Publish and save keyframes:
         for id in kf_ids:
-            kf = frames_cache.get(id)
-            kframes_q.put(kf) #Publish
+            #kf = frames_cache.get(id)
+            #kframes_q.put(kf) #Publish
             path = frames.get_path(id)
             #save keyframe. #In average takes 500ns per keyframe. Not a bottleneck
             keyframes_cp.copy(path)
@@ -294,20 +294,20 @@ def main():
         target=prediction_aligning,
         args=(q_preds, )
     )
-    p_kfpublisher = mp.Process(
-        target=keyframe_publisher,
-        args=(q_kframes, )
-    )
+    #p_kfpublisher = mp.Process(
+    #    target=keyframe_publisher,
+    #    args=(q_kframes, )
+    #)
 
     p_publisher.start()
     p_processing.start()
     p_aligning.start()
-    p_kfpublisher.start()
+    #p_kfpublisher.start()
 
     p_publisher.join()
     p_processing.join()
     p_aligning.join()
-    p_kfpublisher.join()
+    #p_kfpublisher.join()
 
 
 if __name__ == '__main__':
