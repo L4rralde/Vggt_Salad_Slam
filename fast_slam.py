@@ -302,16 +302,12 @@ def main():
     #    args=(q_kframes, )
     #)
 
-    p_publisher.start()
-    p_processing.start()
-    p_aligning.start()
-    #p_kfpublisher.start()
+    processes = [p_publisher, p_processing, p_aligning]
+    for p in processes:
+        p.start()
 
-    p_publisher.join()
-    p_processing.join()
-    p_aligning.join()
-    #p_kfpublisher.join()
-
+    for p in processes:
+        p.join()
 
 if __name__ == '__main__':
     main()
