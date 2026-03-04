@@ -7,7 +7,7 @@ class SoftLink:
         self.root = Path(root).resolve()
         self.other_root = Path(other_root).resolve()
 
-        if self.root.exists():
+        if self.root.exists() and clear:
             shutil.rmtree(self.root)
 
         self.root.mkdir(parents=True, exist_ok=True)

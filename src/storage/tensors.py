@@ -8,16 +8,17 @@ import torch
 
 
 class TensorRepository:
-    def __init__(self, root: str):
+    def __init__(self, root: str, clear: bool=False):
         self.root = Path(root)
         self.tensors_dir = self.root / 'tensors'
         self.db_path = self.root / 'metadata.db'
 
-        if self.tensors_dir.exists():
+        if self.tensors_dir.exists() and clear:
             shutil.rmtree(self.tensors_dir)
         self.tensors_dir.mkdir(parents=True, exist_ok=True)
 
-        self._init_db()
+        if clear:
+            self._init_db()
         self._lock = threading.Lock()
 
     def _get_conn(self):

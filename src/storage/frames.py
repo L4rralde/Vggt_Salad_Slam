@@ -8,15 +8,16 @@ from PIL import Image
 
 
 class FrameRepository:
-    def __init__(self, root: str='frames_repo'):
+    def __init__(self, root: str, clear: bool=False):
         self.root = Path(root)
         self.frames_dir = self.root / "frames"
         self.db_path = self.root / "metadata.db"
-        if self.frames_dir.exists():
+        if self.frames_dir.exists() and clear:
             shutil.rmtree(self.frames_dir)
         self.frames_dir.mkdir(parents=True, exist_ok=True)
 
-        self._init_db()
+        if clear:
+            self._init_db()
         self._lock = threading.Lock()
 
     def _get_conn(self):
