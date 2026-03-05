@@ -84,7 +84,7 @@ class ViewToken:
 
 def video_processing(frame_q: Queue, kframes_q: Queue, preds_q: Queue, model_ready: mp.Event) -> None:
     from src.models import get_model
-    from src.keyframes import KeyFramesDetector
+    from src.keyframes import KeyFramesDetector, CloseLoopDetector
 
     print("Loading model...")
     start = perf_counter()
@@ -102,19 +102,21 @@ def video_processing(frame_q: Queue, kframes_q: Queue, preds_q: Queue, model_rea
         SoftLink
     )
 
-    frames = FrameRepository('output/frames') #Frames and metadata in disk
-    keyframes_cp = SoftLink('output/keyframes', frames.root)
+    frames = FrameRepository('output/frames', clear=True) #Frames and metadata in disk
+    keyframes_cp = SoftLink('output/keyframes', frames.root, clear=True)
     frames_cache = FIFOCache(64)
-    descriptors = TensorRepository('output/viewpreds/descriptors')
+    descriptors = TensorRepository('output/viewpreds/descriptors', clear=True)
     #patch_tokens = TensorRepository('output/viewpreds/patch_tokens')
     #processed_imgs = TensorRepository('output/viewpreds/processed_imgs')
     viewpreds_cache = FIFOCache(32)
+    loop_detector = CloseLoopDetector()
 
     to_encode_ids = [] #Ids to encode.
     to_predict_ids = []
     predicted_ids = []
     keyframe_detector = KeyFramesDetector() #Detects if a frame is a new frame
     model_ready.set()
+    ignore_last_kf_for_closure = 20
     while True:
         #1. Append frames to a batch for encoding
         frame: Frame = frame_q.get()
@@ -156,10 +158,10 @@ def video_processing(frame_q: Queue, kframes_q: Queue, preds_q: Queue, model_rea
 
         #3. Keyframe selection
         #This is fast. Not a bottleneck. Approx 50ns per frame.
-        kf_ids, kf_preds = keyframe_detector(encoded_ids, view_preds) 
+        kf_ids, kf_preds = keyframe_detector(encoded_ids, view_preds, th=0.65)
         if not kf_ids:
             continue
-
+            
         print(f"Found new keyframes: {kf_ids}")
         #Publish and save keyframes:
         for id in kf_ids:
@@ -187,13 +189,20 @@ def video_processing(frame_q: Queue, kframes_q: Queue, preds_q: Queue, model_rea
         end = perf_counter()
         print(f"Saving and caching {len(kf_ids)} keyframes pred took {end - start:.4f} seconds")
 
+        #Closed loop detection
+        for id, descriptor in zip(kf_ids, kf_preds.descriptors):
+            closest_matches, sim_v = loop_detector(id, descriptor, th=0.5, dt=ignore_last_kf_for_closure)
+            if len(closest_matches) > 0:
+                print('-'*20)
+                print(f"Found possible loop closure for key frame {id}: {closest_matches}. With sim values: {sim_v}")
+                print('-'*20)
+
         to_predict_ids += kf_ids
         if len(to_predict_ids) < 4:
             continue
         #3 Chunk Sequence prediction
         #Preparing chunk
         chunk_ids = predicted_ids[-4:] + to_predict_ids #Ids of frames to chunk
-        print(f"Processing sequence of size {len(chunk_ids)}...")
         start = perf_counter()
         chunk_tokens: List[ViewToken] = [viewpreds_cache.get(id) for id in chunk_ids]
         chunk_preds = Dict()
@@ -201,7 +210,7 @@ def video_processing(frame_q: Queue, kframes_q: Queue, preds_q: Queue, model_rea
         chunk_preds.images = torch.stack([token.processed_img for token in chunk_tokens])
         preds = model.chunk_prediction(chunk_preds)
         end = perf_counter()
-        print(f"Sequence prediction took {end - start:.3f} seconds")
+        print(f"Sequence prediction of size {len(chunk_ids)} took {end - start:.3f} seconds")
         predicted_ids += to_predict_ids
         to_predict_ids = []
 
@@ -209,6 +218,8 @@ def video_processing(frame_q: Queue, kframes_q: Queue, preds_q: Queue, model_rea
         if preds_q.full():
             print("[WARNING] preds_q is full")
         preds_q.put(preds)
+
+        ignore_last_kf_for_closure = 2*len(chunk_ids)
 
 
 def prediction_aligning(predictions_q: Queue) -> None:
@@ -224,7 +235,6 @@ def prediction_aligning(predictions_q: Queue) -> None:
 
         if prev_preds:
             start = perf_counter()
-            print(f"Aligning scenes...")
             curr_preds = VggtlongAlign().fit_transform(prev_preds, curr_preds)
             end = perf_counter()
             print(f"Aligning took {end - start:.4f} seconds")
