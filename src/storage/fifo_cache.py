@@ -12,6 +12,9 @@ class FIFOCache:
         self.cache_dict = {}
         self.fifo = deque()
 
+    def __contains__(self, key: int) -> bool:
+        return key in self.cache_dict
+
     def get(self, key: Any) -> Any:
         return self.cache_dict[key]
 
