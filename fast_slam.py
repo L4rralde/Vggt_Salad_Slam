@@ -105,9 +105,9 @@ def video_processing(frame_q: Queue, kframes_q: Queue, preds_q: Queue, model_rea
     frames = FrameRepository('output/frames', clear=True) #Frames and metadata in disk
     keyframes_cp = SoftLink('output/keyframes', frames.root, clear=True)
     frames_cache = FIFOCache(64)
-    descriptors = TensorRepository('output/viewpreds/descriptors', clear=True)
-    #patch_tokens = TensorRepository('output/viewpreds/patch_tokens')
-    #processed_imgs = TensorRepository('output/viewpreds/processed_imgs')
+    #descriptors = TensorRepository('output/viewpreds/descriptors', clear=True)
+    patch_tokens = TensorRepository('output/viewpreds/patch_tokens')
+    processed_imgs = TensorRepository('output/viewpreds/processed_imgs')
     viewpreds_cache = FIFOCache(32)
     loop_detector = CloseLoopDetector()
 
@@ -116,7 +116,6 @@ def video_processing(frame_q: Queue, kframes_q: Queue, preds_q: Queue, model_rea
     predicted_ids = []
     keyframe_detector = KeyFramesDetector() #Detects if a frame is a new frame
     model_ready.set()
-    ignore_last_kf_for_closure = 20
     while True:
         #1. Append frames to a batch for encoding
         frame: Frame = frame_q.get()
@@ -178,9 +177,9 @@ def video_processing(frame_q: Queue, kframes_q: Queue, preds_q: Queue, model_rea
         start = perf_counter()
         zip_iter = zip(kf_ids, kf_preds.patch_tokens, kf_preds.images, kf_preds.descriptors)
         for frame_id, token, img, desc in zip_iter:
-            descriptors.append(frame_id, desc) #save in disk
-            #patch_tokens.append(frame_id, token) #disk
-            #processed_imgs.append(frame_id, img) #disk
+            #descriptors.append(frame_id, desc) #save in disk
+            patch_tokens.append(frame_id, token) #disk
+            processed_imgs.append(frame_id, img) #disk
             viewpreds_cache.append(frame_id, ViewToken(frame_id, token, img))#Ram
         
         #Both explicitly deleting a variable and calling the gc is slow.
@@ -191,26 +190,55 @@ def video_processing(frame_q: Queue, kframes_q: Queue, preds_q: Queue, model_rea
 
         #Closed loop detection
         for id, descriptor in zip(kf_ids, kf_preds.descriptors):
-            closest_matches, sim_v = loop_detector(id, descriptor, th=0.5, dt=ignore_last_kf_for_closure)
-            if len(closest_matches) > 0:
-                print('-'*20)
-                print(f"Found possible loop closure for key frame {id}: {closest_matches}. With sim values: {sim_v}")
-                print('-'*20)
+            loop_detector.append(id, descriptor)
 
         to_predict_ids += kf_ids
         if len(to_predict_ids) < 4:
             continue
+
+        start = perf_counter()
+        match = loop_detector(
+            query_ids = predicted_ids[-2:] + to_predict_ids,
+            ref_ids = predicted_ids[:-20],
+            th = 0.6
+        )
+        end = perf_counter()
+
+        if match is not None:
+            query_match, ref_match, sim = match
+            print(f"Found match ({query_match}, {ref_match}) with sim {sim}")
+            print(f"Loop Closure call took {end - start:.4f} seconds")
+            loop_closure_idx = predicted_ids.index(ref_match)
+            l_idx = max(0, loop_closure_idx - 2)
+            r_idx = min(loop_closure_idx + 3, len(predicted_ids))
+            loop_aligning_ids = [predicted_ids[i] for i in range(l_idx, r_idx)]
+            print(f"Appending ids to next sequence prediction: {loop_aligning_ids}")
+        else:
+            loop_aligning_ids = []
+
         #3 Chunk Sequence prediction
         #Preparing chunk
-        chunk_ids = predicted_ids[-4:] + to_predict_ids #Ids of frames to chunk
+        chunk_ids = predicted_ids[-4:] + to_predict_ids + loop_aligning_ids #Ids of frames to chunk
         start = perf_counter()
-        chunk_tokens: List[ViewToken] = [viewpreds_cache.get(id) for id in chunk_ids]
+        chunk_tokens: List[ViewToken] = []
+        for id in chunk_ids:
+            if id in viewpreds_cache:
+                chunk_tokens.append(viewpreds_cache.get(id))
+                continue
+            view_token = ViewToken(
+                id,
+                patch_tokens.get(id),
+                processed_imgs.get(id)
+            )
+            chunk_tokens.append(view_token)
+
         chunk_preds = Dict()
         chunk_preds.patch_tokens = torch.stack([token.token for token in chunk_tokens])
         chunk_preds.images = torch.stack([token.processed_img for token in chunk_tokens])
         preds = model.chunk_prediction(chunk_preds)
         end = perf_counter()
         print(f"Sequence prediction of size {len(chunk_ids)} took {end - start:.3f} seconds")
+
         predicted_ids += to_predict_ids
         to_predict_ids = []
 
@@ -218,8 +246,6 @@ def video_processing(frame_q: Queue, kframes_q: Queue, preds_q: Queue, model_rea
         if preds_q.full():
             print("[WARNING] preds_q is full")
         preds_q.put(preds)
-
-        ignore_last_kf_for_closure = 2*len(chunk_ids)
 
 
 def prediction_aligning(predictions_q: Queue) -> None:
