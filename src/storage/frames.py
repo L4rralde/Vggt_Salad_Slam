@@ -1,4 +1,4 @@
-from typing import Tuple
+from typing import Tuple, List
 from pathlib import Path
 import sqlite3
 import threading
@@ -106,3 +106,14 @@ class FrameRepository:
         
         path = row[0]
         return path
+
+    def list_all_ids(self) -> List[int]:
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute("SELECT frame_id FROM FRAMES")
+        rows = cursor.fetchall()
+        conn.close()
+
+        if rows is None:
+            return []
+        return [r[0] for r in rows]

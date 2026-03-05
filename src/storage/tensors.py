@@ -1,4 +1,4 @@
-from typing import Tuple
+from typing import Tuple, List
 from pathlib import Path
 import shutil
 import threading
@@ -71,3 +71,16 @@ class TensorRepository:
         
         tensor = torch.load(row[0])
         return tensor
+
+    def list_all_ids(self) -> List[int]:
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute("SELECT frame_id FROM TENSORS")
+        rows = cursor.fetchall()
+        conn.close()
+
+        if rows is None:
+            return []
+        
+        return [r[0] for r in rows]
+
