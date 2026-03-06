@@ -249,11 +249,12 @@ def video_processing(frame_q: Queue, kframes_q: Queue, preds_q: Queue, model_rea
 
 
 def prediction_aligning(predictions_q: Queue) -> None:
-    from src.sim3 import VggtlongAlign
+    from src.sim3 import VggtlongAlign, OptimizationGraph
     from src.storage import NdarrayRepository, FIFOCache
 
     chunks_cache = FIFOCache(2)
     chunks_repo = NdarrayRepository('output/chunks', clear=True)
+    optim_graph = OptimizationGraph(chunks_cache, chunks_repo, VggtlongAlign)
 
     registered_ids = []
     chunk_cnt = 0
@@ -273,9 +274,11 @@ def prediction_aligning(predictions_q: Queue) -> None:
             )
             end = perf_counter()
             print(f"Aligning took {end - start:.4f} seconds")
+        
+        chunks_cache.append(chunk_cnt, curr_preds)
+        optim_graph.append(chunk_cnt, curr_preds.ids)
 
         registered_ids += list(curr_preds.ids)
-        chunks_cache.append(chunk_cnt, curr_preds)
         chunks_repo.append(chunk_cnt, asdict(curr_preds))
         prev_chunk_id = chunk_cnt
 
