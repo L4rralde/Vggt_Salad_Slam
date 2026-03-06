@@ -1,30 +1,16 @@
-from typing import Tuple, List
-from pathlib import Path
-import shutil
-import threading
-import sqlite3
+from typing import Tuple
 
 import torch
 
+from .repository import Repository
 
-class TensorRepository:
+class TensorRepository(Repository):
     def __init__(self, root: str, clear: bool=False):
-        self.root = Path(root)
-        self.tensors_dir = self.root / 'tensors'
-        self.db_path = self.root / 'metadata.db'
+        super().__init__(root, "TENSORS", clear)
 
-        if self.tensors_dir.exists() and clear:
-            shutil.rmtree(self.tensors_dir)
-        self.tensors_dir.mkdir(parents=True, exist_ok=True)
-
-        if clear:
-            self._init_db()
-        self._lock = threading.Lock()
-
-    def _get_conn(self):
-        return sqlite3.connect(self.db_path)
-
-    def _init_db(self) -> None:
+    def _init_db(self, clear: bool) -> None:
+        if not clear:
+            return
         conn = self._get_conn()
         cursor = conn.cursor()
 
@@ -39,7 +25,7 @@ class TensorRepository:
 
     def append(self, frame_id: int, tensor: torch.Tensor) -> int:
         with self._lock:
-            tensors_subdir = self.tensors_dir / f"{frame_id // 1000:06d}"
+            tensors_subdir = self.data_dir / f"{frame_id // 1000:06d}"
             tensors_subdir.mkdir(exist_ok=True)
             tensor_path = tensors_subdir / f"{frame_id:09d}.pt"
             torch.save(tensor.cpu(), tensor_path)
@@ -71,16 +57,3 @@ class TensorRepository:
         
         tensor = torch.load(row[0])
         return tensor
-
-    def list_all_ids(self) -> List[int]:
-        conn = self._get_conn()
-        cursor = conn.cursor()
-        cursor.execute("SELECT frame_id FROM TENSORS")
-        rows = cursor.fetchall()
-        conn.close()
-
-        if rows is None:
-            return []
-        
-        return [r[0] for r in rows]
-

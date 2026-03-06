@@ -1,29 +1,17 @@
-from typing import Tuple, List
-from pathlib import Path
-import sqlite3
-import threading
-import shutil
+from typing import Tuple
 
 from PIL import Image
 
+from .repository import Repository
 
-class FrameRepository:
+
+class FrameRepository(Repository):
     def __init__(self, root: str, clear: bool=False):
-        self.root = Path(root)
-        self.frames_dir = self.root / "frames"
-        self.db_path = self.root / "metadata.db"
-        if self.frames_dir.exists() and clear:
-            shutil.rmtree(self.frames_dir)
-        self.frames_dir.mkdir(parents=True, exist_ok=True)
+        super().__init__(root, "FRAMES", clear)
 
-        if clear:
-            self._init_db()
-        self._lock = threading.Lock()
-
-    def _get_conn(self):
-        return sqlite3.connect(self.db_path)
-
-    def _init_db(self) -> None:
+    def _init_db(self, clear: bool) -> None:
+        if not bool:
+            return
         conn = self._get_conn()
         cursor = conn.cursor()
 
@@ -54,7 +42,7 @@ class FrameRepository:
             # The latter is vulnerable to sql injection attacks
             frame_id = cursor.lastrowid
 
-            subdir = self.frames_dir / f"{frame_id // 1000:06d}"
+            subdir = self.data_dir / f"{frame_id // 1000:06d}"
             subdir.mkdir(exist_ok=True)
             fname = f"{frame_id:09d}.jpg"
             fpath = subdir / fname
@@ -106,14 +94,3 @@ class FrameRepository:
         
         path = row[0]
         return path
-
-    def list_all_ids(self) -> List[int]:
-        conn = self._get_conn()
-        cursor = conn.cursor()
-        cursor.execute("SELECT frame_id FROM FRAMES")
-        rows = cursor.fetchall()
-        conn.close()
-
-        if rows is None:
-            return []
-        return [r[0] for r in rows]
