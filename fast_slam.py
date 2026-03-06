@@ -250,25 +250,34 @@ def video_processing(frame_q: Queue, kframes_q: Queue, preds_q: Queue, model_rea
 
 def prediction_aligning(predictions_q: Queue) -> None:
     from src.sim3 import VggtlongAlign
+    from src.storage import NdarrayRepository, FIFOCache
+
+    chunks_cache = FIFOCache(2)
+    chunks_repo = NdarrayRepository('output/chunks', clear=True)
+
     registered_ids = []
-    prev_preds: Dict[str, np.ndarray] = {}
     chunk_cnt = 0
+    prev_chunk_id = -1
+
     os.makedirs('preds', exist_ok=True)
     while True:
         curr_preds = predictions_q.get()
         if curr_preds is None:
             break
 
-        if prev_preds:
+        if prev_chunk_id in chunks_cache:
             start = perf_counter()
-            curr_preds = VggtlongAlign().fit_transform(prev_preds, curr_preds)
+            curr_preds = VggtlongAlign().fit_transform(
+                chunks_cache.get(prev_chunk_id),
+                curr_preds
+            )
             end = perf_counter()
             print(f"Aligning took {end - start:.4f} seconds")
 
-        prev_preds = curr_preds
         registered_ids += list(curr_preds.ids)
-        path = f'./preds/{chunk_cnt}.npz'
-        np.savez(path, **asdict(curr_preds))
+        chunks_cache.append(chunk_cnt, curr_preds)
+        chunks_repo.append(chunk_cnt, asdict(curr_preds))
+        prev_chunk_id = chunk_cnt
 
         chunk_cnt += 1
 

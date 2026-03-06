@@ -3,3 +3,4 @@ from .fifo_cache import FIFOCache
 from .tensors import TensorRepository
 from .softlink import SoftLink
 from .repository import Repository
+from .ndarray import NdarrayRepository
