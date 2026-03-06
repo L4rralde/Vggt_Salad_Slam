@@ -1,4 +1,4 @@
-from typing import Dict
+from typing import Dict, List, Any
 
 import numpy as np
 
@@ -64,3 +64,26 @@ class NdarrayRepository(Repository):
             data = data['__ndarray_data']
         
         return data
+
+    def list_all_ids(self) -> List[Any]:
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute(f"SELECT id from {self.table_name}")
+        rows = cursor.fetchall()
+        conn.close()
+
+        return [r[0] for r in rows]
+
+    def __contains__(self, id: Any) -> bool:
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute(
+            f"SELECT EXISTS (SELECT 1 FROM {self.table_name} where id=?) ",
+            (id,)
+        )
+        row = cursor.fetchone()
+        conn.close()
+
+        if row is None or row[0] == 0:
+            return False
+        return True
