@@ -14,12 +14,13 @@ from .utils import(
     unproject_depth_map_to_point_map
 )
 from .third_party.vggt_long.sim3_utils import robust_weighted_estimate_sim3
+from .sim3 import Sim3
 
 
 def vggtlong_est_scenes_transform(
     src_preds: Dict[str, np.ndarray],
     tgt_preds: Dict[str, np.ndarray]
-) -> Tuple[float, np.ndarray, np.ndarray]:
+) -> Sim3:
     src_ids = list(src_preds.ids)
     tgt_ids = list(tgt_preds.ids)
 
@@ -58,12 +59,12 @@ def vggtlong_est_scenes_transform(
         initial_weights
     )
 
-    return s, R, t
+    return Sim3(s, R, t)
 
 
 class Sim3Align:
     def __init__(self):
-        self.sim3: Tuple[float, np.ndarray, np.ndarray] = ()
+        self.sim3: Sim3|None = None
 
     @abstractmethod
     def fit(
@@ -82,12 +83,11 @@ class Sim3Align:
         return self.transform(src_preds)
 
     def transform(self, preds: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
-        s, R, t = self.sim3
+        s, R, t = self.sim3.astuple()
         new_preds = copy(preds)
         new_preds.depth = s*preds.depth
         
-        se3_t = sim3_transform_mat(1.0, R, t)
-        se3_t_inv = closed_form_se3_inv(se3_t)
+        se3_t_inv = Sim3(1.0, R, t).inv().asmatrix()
         
         new_extrinsics = []
         for extrinsic in preds.extrinsic:
