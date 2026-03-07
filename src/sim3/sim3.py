@@ -2,6 +2,7 @@
 from typing import Tuple
 
 import numpy as np
+from scipy.spatial.transform import Rotation
 
 
 class Sim3:
@@ -9,6 +10,21 @@ class Sim3:
         self.s = s
         self.R = R
         self.t = t
+
+    @staticmethod
+    def identity() -> "Sim3":
+        return Sim3(
+            1.0,
+            np.eye(3, dtype=np.float32),
+            np.zeros(3, dtype=np.float32)
+        )
+
+    def __repr__(self) -> str:
+        R = Rotation.from_matrix(self.R)
+        s_str = f"{self.s:.3f}"
+        rot_vec_str = ", ".join([f"{x:.4f}" for x in R.as_rotvec()])
+        t_str = ", ".join([f"{x:.4f}" for x in self.t])
+        return f"Sim3(s={s_str}, rot_vec=[{rot_vec_str}], t=[{t_str}])"
 
     def astuple(self) -> Tuple[float, np.ndarray, np.ndarray]:
         return self.s, self.R, self.t
