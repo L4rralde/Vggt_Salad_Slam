@@ -19,6 +19,12 @@ class Sim3:
             np.zeros(3, dtype=np.float32)
         )
 
+    def copy(self) -> "Sim3":
+        return Sim3(self.s, self.R.copy(), self.t.copy())
+
+    def __copy__(self) -> "Sim3":
+        return self.copy()
+
     def __repr__(self) -> str:
         R = Rotation.from_matrix(self.R)
         s_str = f"{self.s:.3f}"
@@ -48,3 +54,38 @@ class Sim3:
             self.R @ other.R,
             self.s * self.R @ other.t + self.t
         )
+
+    def nthroot(self, n: int) -> "Sim3":
+        assert isinstance(n, int), "n must be integer"
+        if n == 0:
+            return Sim3.identity()
+        if n < 0:
+            n *= -1
+            sim3 = self.inv()
+        else:
+            sim3 = self
+        if n == 1:
+            return sim3
+
+        sR_pow = np.eye(3, dtype=sim3.R.dtype)
+        root_s = sim3.s ** (1/n)
+        root_R = (Rotation.from_matrix(sim3.R) ** (1/n)).as_matrix()
+
+        sR_acc = np.zeros((3, 3), dtype=sim3.R.dtype)
+        for _ in range(n):
+            sR_acc = sR_acc + sR_pow
+            sR_pow = sR_pow @ (root_s * root_R)
+
+        #sR_acc = I + sR + (sR)^2 + ... + (sR)^n-1
+        #s_pow = s^|n|
+        #R_pow = R^|n|
+        
+        root_t = np.linalg.solve(sR_acc, sim3.t)
+        root = Sim3(root_s, root_R, root_t)
+    
+        root_to_n = Sim3.identity()
+        for _ in range(n):
+            root_to_n = root_to_n @ root
+        print(f"nthroot computatin. Input: {self}, rooth: {root}, root_to_n={root_to_n}")
+
+        return root

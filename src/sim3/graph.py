@@ -1,4 +1,4 @@
-from typing import List, Set, Optional, Deque, Tuple, Dict
+from typing import List, Set, Optional, Deque, Tuple, Dict, Any
 from abc import ABC, abstractmethod
 from collections import defaultdict, deque
 from dataclasses import dataclass
@@ -8,7 +8,7 @@ import addict
 
 from .align import Sim3Align
 from .sim3 import Sim3
-from .loop_closing import refine_sim3_loop, refine_sim3_sequence
+from .loop_closing import refine_sim3_loop, refine_sim3_sequence, refine_sim3_loop_with_interpolation
 
 
 @dataclass
@@ -24,6 +24,9 @@ class ChunkStorageInterface(ABC):
         raise NotImplementedError()
     @abstractmethod
     def __contains__(self, item) -> bool:
+        raise NotImplementedError
+    @abstractmethod
+    def append(self, id: int, data: Any) -> None:
         raise NotImplementedError
 
 
@@ -45,7 +48,7 @@ class OptimizationGraph:
         self.frame_ids_map: Dict[int, int] = {} 
         #Edges[x][y] = S (Sim3Aling). Sy -> x. S transform aligns y(src) to x(tgt)
         #We say x is a parent of y
-        self.edges: Dict[int, Dict[int, Sim3Align]] = defaultdict(dict)
+        self.edges: Dict[int, Dict[int, Sim3]] = defaultdict(dict)
         self.root: int = 0
         self.loops_to_optimize: List[List[int]] = []
     
@@ -97,6 +100,8 @@ class OptimizationGraph:
                 loop = self.find_loop(registered_chunk, id_of_chunk)
                 self.loops_to_optimize.append(loop)
                 print(f"found new loop: {loop}")
+        if self.loops_to_optimize:
+            self.optimize()
 
     def sort_locked_chunks_first_in_loop(self, ids_loop: List[int]) -> List[int]:
         chunks: Deque[Chunk] = deque([self.chunks_dict[id] for id in ids_loop])
@@ -135,7 +140,7 @@ class OptimizationGraph:
         ]
         #We expect S_10 S_21 S_32 S_03 = I
         #Hence S_10 S_21 S_32 = S_03^-1
-        sim3_seq = refine_sim3_loop(sim3_seq)
+        sim3_seq = refine_sim3_loop_with_interpolation(sim3_seq)
         
         for (parent, child), sim3 in zip(edges, sim3_seq):
             self.edges[parent][child] = sim3
@@ -196,3 +201,39 @@ class OptimizationGraph:
         for loop in self.loops_to_optimize:
             self.simple_optimize_loop(loop)
         self.loops_to_optimize = []
+
+    def update_chunks_tree(
+        self,
+        root: int=-1,
+        world_transform: Sim3|None=None,
+        updated: List[int] = []
+    ) -> None:
+        if root == -1:
+            root = self.root
+        if world_transform is None:
+            world_transform = Sim3.identity()
+        
+        if root in updated:
+            return
+
+        chunk = addict.Dict(dict(self.chunk_repo.get(root)))
+        transform = Sim3Align()
+        transform.sim3 = world_transform
+        print(f"applying new transform to chunk {root}: {world_transform}")
+        chunk = transform.transform(chunk)
+        self.chunk_repo.append(root, chunk)
+        updated += [root]
+
+        if not self.edges[root]:
+            return
+        for child in self.edges[root]:
+            self.update_chunks_tree(
+                root = child,
+                world_transform = world_transform@self.edges[root][child],
+                updated = updated
+            )
+            self.edges[root][child] = Sim3.identity()
+
+    def finish(self) -> None:
+        print("Updating all chunks")
+        self.update_chunks_tree()

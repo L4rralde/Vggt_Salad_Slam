@@ -283,6 +283,8 @@ def prediction_aligning(predictions_q: Queue) -> None:
         prev_chunk_id = chunk_cnt
 
         chunk_cnt += 1
+    
+    optim_graph.finish()
 
 
 def main():
