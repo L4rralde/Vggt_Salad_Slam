@@ -219,7 +219,6 @@ class OptimizationGraph:
         chunk = addict.Dict(dict(self.chunk_repo.get(root)))
         transform = Sim3Align()
         transform.sim3 = world_transform
-        print(f"applying new transform to chunk {root}: {world_transform}")
         chunk = transform.transform(chunk)
         self.chunk_repo.append(root, chunk)
         updated += [root]

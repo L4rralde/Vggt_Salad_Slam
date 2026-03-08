@@ -27,7 +27,6 @@ def refine_sim3_loop_with_interpolation(sim3_loop: List[Sim3]) -> List[Sim3]:
     sim3_seq = sim3_loop[:-1]
     constraint = sim3_loop[-1].inv()
     n = len(sim3_seq)
-    print("refine_sim3_loop_with_interpolation", n)
     s_est = constraint.nthroot(n)
     sim3_loop[:-1] = [s_est.copy() for _ in range(n)]
     return sim3_loop

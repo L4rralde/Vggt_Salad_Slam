@@ -86,6 +86,5 @@ class Sim3:
         root_to_n = Sim3.identity()
         for _ in range(n):
             root_to_n = root_to_n @ root
-        print(f"nthroot computatin. Input: {self}, rooth: {root}, root_to_n={root_to_n}")
 
         return root
