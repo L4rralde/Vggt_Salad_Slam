@@ -25,7 +25,7 @@ def refine_sim3_loop_with_interpolation(sim3_loop: List[Sim3]) -> List[Sim3]:
     # Thus S'^n S{n,0} \approx I
     # Finally, S' = S{n,0}^{1/n}
     sim3_seq = sim3_loop[:-1]
-    constraint = sim3_loop[-1]
+    constraint = sim3_loop[-1].inv()
     n = len(sim3_seq)
     print("refine_sim3_loop_with_interpolation", n)
     s_est = constraint.nthroot(n)

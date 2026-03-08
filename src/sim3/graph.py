@@ -60,8 +60,8 @@ class OptimizationGraph:
         raise KeyError(f"id {id} unknown")
 
     def add_edge(self, parent: id, child: id) -> None:
-        src_preds = self.get_chunk_prediction(parent)
-        tgt_preds = self.get_chunk_prediction(child)
+        tgt_preds = self.get_chunk_prediction(parent)
+        src_preds = self.get_chunk_prediction(child)
         self.edges[parent][child] = self.aligning_class().fit(tgt_preds, src_preds).sim3
 
     def find_route(self, root: int, node: int) -> List[int]:
