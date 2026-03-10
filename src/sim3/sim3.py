@@ -1,5 +1,5 @@
 
-from typing import Tuple
+from typing import Tuple, Any
 
 import numpy as np
 from scipy.spatial.transform import Rotation
@@ -31,6 +31,17 @@ class Sim3:
         rot_vec_str = ", ".join([f"{x:.4f}" for x in R.as_rotvec()])
         t_str = ", ".join([f"{x:.4f}" for x in self.t])
         return f"Sim3(s={s_str}, rot_vec=[{rot_vec_str}], t=[{t_str}])"
+
+    def __eq__(self, other: Any) -> bool:
+        assert isinstance(other, Sim3), "By the moment only Sim3 is supported"
+        return (
+            self.s == other.s and
+            (self.R == other.R).all() and
+            (self.t == other.t).all()
+        )
+
+    def is_identity(self) -> bool:
+        return self.__eq__(Sim3.identity())
 
     def astuple(self) -> Tuple[float, np.ndarray, np.ndarray]:
         return self.s, self.R, self.t

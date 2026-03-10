@@ -254,37 +254,24 @@ def prediction_aligning(predictions_q: Queue) -> None:
 
     chunks_cache = FIFOCache(2)
     chunks_repo = NdarrayRepository('output/chunks', clear=True)
-    optim_graph = OptimizationGraph(chunks_cache, chunks_repo, VggtlongAlign)
+    transform_graph = OptimizationGraph(chunks_cache, chunks_repo, VggtlongAlign)
 
     registered_ids = []
     chunk_cnt = 0
-    prev_chunk_id = -1
 
     os.makedirs('preds', exist_ok=True)
     while True:
         curr_preds = predictions_q.get()
         if curr_preds is None:
             break
-
-        if prev_chunk_id in chunks_cache:
-            start = perf_counter()
-            curr_preds = VggtlongAlign().fit_transform(
-                chunks_cache.get(prev_chunk_id),
-                curr_preds
-            )
-            end = perf_counter()
-            print(f"Aligning took {end - start:.4f} seconds")
         
-        chunks_cache.append(chunk_cnt, curr_preds)
-        optim_graph.append(chunk_cnt, curr_preds.ids)
+        chunks_cache.append(chunk_cnt, curr_preds) #Stores chunk in cache
+        chunks_repo.append(chunk_cnt, asdict(curr_preds)) #Stores chunk in disk
+        transform_graph.append(chunk_cnt, curr_preds.ids)
 
         registered_ids += list(curr_preds.ids)
-        chunks_repo.append(chunk_cnt, asdict(curr_preds))
-        prev_chunk_id = chunk_cnt
 
         chunk_cnt += 1
-    
-    optim_graph.finish()
 
 
 def main():

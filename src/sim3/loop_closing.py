@@ -12,7 +12,15 @@ def refine_sim3_loop(sim3_loop: List[Sim3]) -> List[Sim3]:
 
 
 def refine_sim3_sequence(sim3_seq: List[Sim3], constraint: Sim3) -> List[Sim3]:
-    return sim3_seq
+    # S_1 S_2 ... S_n = constraint
+    #By the moment I'll update the predictions before the refinement
+    #FIXME. This is not a feasible solution when sim3_seq is not a sequence of sim3.identity()
+    for sim3 in sim3_seq:
+        if not sim3.is_identity():
+            raise ValueError("Expected a sequence of identity transformations")
+    n = len(sim3_seq)
+    interpolated = constraint.nthroot(n)
+    return [interpolated for _ in range(n)]
 
 
 def refine_sim3_loop_with_interpolation(sim3_loop: List[Sim3]) -> List[Sim3]:

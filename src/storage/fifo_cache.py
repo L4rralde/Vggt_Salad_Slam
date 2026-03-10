@@ -19,6 +19,9 @@ class FIFOCache:
         return self.cache_dict[key]
 
     def append(self, key: Any, value: Any) -> None:
+        if key in self.fifo:
+            self.fifo.remove(key)
+
         if len(self.fifo) == self.max_size:
             key_to_remove = self.fifo.popleft()
             self.cache_dict.pop(key_to_remove)

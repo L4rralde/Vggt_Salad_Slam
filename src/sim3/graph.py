@@ -15,7 +15,18 @@ from .loop_closing import refine_sim3_loop, refine_sim3_sequence, refine_sim3_lo
 class Chunk:
     chunk_id: int
     frame_ids: List[int]
+    global_transform: Optional[Sim3]|None = None
+
+
+@dataclass
+class Edge:
+    parent: int
+    child: int
+    transform: Sim3 #Aligns child's coordinate system with father's one
     locked: Optional[bool] = False
+
+    def __repr__(self) -> str:
+        return f"Edge(parent: {self.parent}, child: {self.child}, locked: {self.locked})"
 
 
 class ChunkStorageInterface(ABC):
@@ -30,7 +41,9 @@ class ChunkStorageInterface(ABC):
         raise NotImplementedError
 
 
+
 class OptimizationGraph:
+    #Following the Separation of concerns principle, this class shouldn't write back
     def __init__(self,
         chunk_cache: ChunkStorageInterface|object,
         chunk_repo: ChunkStorageInterface|object,
@@ -48,7 +61,7 @@ class OptimizationGraph:
         self.frame_ids_map: Dict[int, int] = {} 
         #Edges[x][y] = S (Sim3Aling). Sy -> x. S transform aligns y(src) to x(tgt)
         #We say x is a parent of y
-        self.edges: Dict[int, Dict[int, Sim3]] = defaultdict(dict)
+        self.edges: Dict[int, Dict[int, Edge]] = defaultdict(dict)
         self.root: int = 0
         self.loops_to_optimize: List[List[int]] = []
     
@@ -57,35 +70,77 @@ class OptimizationGraph:
             return self.chunk_cache.get(id)
         if id in self.chunk_repo:
             return addict.Dict(dict(self.chunk_repo.get(id)))
-        raise KeyError(f"id {id} unknown")
+        raise KeyError(f"id {id} not sotred")
 
-    def add_edge(self, parent: id, child: id) -> None:
+    def add_edge(self, parent: id, child: id, sim3: Sim3|None=None) -> Sim3:
+        """
+        Parent: id of the parent (src) chunk
+        child: id of the child (dst) chunk
+        sim3: sim3 transformation used to align child's coordinate system with parent's one.
+                It may be computed before.
+        """
         tgt_preds = self.get_chunk_prediction(parent)
         src_preds = self.get_chunk_prediction(child)
-        self.edges[parent][child] = self.aligning_class().fit(tgt_preds, src_preds).sim3
+        if sim3 is None:
+            sim3 = self.aligning_class().fit(tgt_preds, src_preds).sim3
+        self.edges[parent][child] = Edge(parent, child, sim3)
+        return sim3
 
-    def find_route(self, root: int, node: int) -> List[int]:
-        if not root in self.edges or not self.edges[root]:
+    def __get_path_no_loops_recursive(self, root: int, node: int, visited: Set[int]) -> List[int]:
+        if not self.edges[root]:
             return []
         if node in self.edges[root]:
             return [root]
+        visited = set(visited) #Create a copy to not use a shared set in all recursive calls
+        visited.add(root)
         for child in self.edges[root].keys():
-            subroute = self.find_route(child, node)
-            if subroute:
-                return [root] + subroute
+            if not self.edges[child] or child in visited:
+                continue
+            subpath = self.__get_path_no_loops_recursive(child, node, visited)
+            if subpath:
+                return [root] + subpath
         return []
 
-    def find_loop(self, root_closing: int, closing: int) -> List[int]:
-        route = self.find_route(root_closing, closing)
-        if not route:
-            return []
-        return route + [closing]
+    def get_path(self, root: int, node: int) -> List[int]:
+        #It's suboptimal to always traverse from self.root.
+        if not root in self.chunks_dict:
+            raise ValueError(f"Src chunk {root} not in graph")
+        if not node in self.chunks_dict:
+            raise ValueError(f"Dst chunk {node} not in graph")
+        return self.__get_path_no_loops_recursive(root, node, visited=set())
 
-    def append(self, id_of_chunk: int, chunk_frames_ids: List[int]) -> int:
-        self.chunks_dict[id_of_chunk] = Chunk(id_of_chunk, chunk_frames_ids)
+    def get_loop_path(self, root_closing: int, closing: int) -> List[int]:
+        path = self.get_path(root_closing, closing)
+        if not path:
+            raise RuntimeError(f"Found no path from Node {root_closing} and {closing}")
+        return path + [closing]
+
+    def append(self, id_of_chunk: int, chunk_frames_ids: List[int], aligned: bool=False) -> int:
+        """
+        Appends a new chunk of predictions to the Optimization Graph.
+        id_of chunk: Unique int to identify chunk of predictions.
+        chunk_frames_ids: Ids of the frames used to produce this chunk.
+        Aligned: Tells you this chunked was already aligned (and transformed) to lie in its father coordinate system.
+                    In such a case father -> child transform is the identity.
+        """
+        global_transform = (
+            Sim3.identity()
+            if id_of_chunk == self.root else None
+        )
+            
+        self.chunks_dict[id_of_chunk] = Chunk(
+            id_of_chunk,
+            chunk_frames_ids,
+            global_transform
+        )
+
         ids_set = set(chunk_frames_ids)
-        connecting_ids = set([id for id in chunk_frames_ids if id in self.unique_frame_ids])
-        new_ids = ids_set - connecting_ids
+        #These are the frame ids, of the current chunk, that are used to align the chunk with another.
+        connecting_ids = set([
+            id for id in chunk_frames_ids
+            if id in self.unique_frame_ids
+        ])
+        new_ids = ids_set - connecting_ids #ids that yet are not included in any other chunk in the graph.
         chunks_connected_to = {self.frame_ids_map[id] for id in connecting_ids}
 
         self.unique_frame_ids |= new_ids
@@ -93,45 +148,77 @@ class OptimizationGraph:
             self.frame_ids_map[id] = id_of_chunk
 
         for registered_chunk in sorted(chunks_connected_to, reverse=True):
-            if id_of_chunk == registered_chunk + 1:
-                self.add_edge(registered_chunk, id_of_chunk)
+            if id_of_chunk == registered_chunk + 1: #Consecutive chunks are treated as parent-child edges
+                sim3 = None if not aligned else Sim3.identity()
+                sim3 = self.add_edge(registered_chunk, id_of_chunk, sim3)
+                parent_global = self.chunks_dict[registered_chunk].global_transform
+                self.chunks_dict[id_of_chunk].global_transform = parent_global @ sim3
             else:
                 self.add_edge(id_of_chunk, registered_chunk) #Here we have a closed loop.
-                loop = self.find_loop(registered_chunk, id_of_chunk)
-                self.loops_to_optimize.append(loop)
+                loop = self.get_loop_path(registered_chunk, id_of_chunk) #This function does not find a loop, just returns the ids contained in the already found loop.
+                #self.loops_to_optimize.append(loop)
                 print(f"found new loop: {loop}")
-        if self.loops_to_optimize:
-            self.optimize()
+                self.simple_loop_optimization(loop)
+                self.update_global_transforms(registered_chunk)
+                #Let's do the optimization in-place
+                #self.simple_optimize_loop(loop)
+                #self.update_loop(loop, registered_chunk)
+                #Then. update it. But we must update the whole subtree
+                #We must optimize the loop, update the chunks, the chunks repo and update the appending chunk in the fifo cache
+            #By the moment I'll update the predictions.
+            #FIXME. Remove when loop optimization actually works.
+            self.update_chunks_tree(registered_chunk)
 
-    def sort_locked_chunks_first_in_loop(self, ids_loop: List[int]) -> List[int]:
-        chunks: Deque[Chunk] = deque([self.chunks_dict[id] for id in ids_loop])
+    def update_global_transforms(self, root: int, visited: Set[int]=set()) -> None:
+        for child in self.edges[root]:
+            if child in visited:
+                continue
+            global_transform = self.chunks_dict[root].global_transform
+            rel_transform = self.edges[root][child].transform
+            self.chunks_dict[child].global_transform = global_transform @ rel_transform
+            self.update_global_transforms(child, visited | set([root]))
 
-        #1. Check if there's any chunk locked
-        found_locked = any((chunk.locked for chunk in chunks))
-        if not found_locked:
-            return ids_loop
-        
-        while chunks[0].locked:
-            chunks = chunks.appendleft(chunks.pop()) #Rotate right
+    def __split_locked_unlocked(self, edges: List[Edge]) -> Tuple[List[Edge], List[Edge]]:
+        locked = [edge.locked for edge in edges]
+        if not any(locked):
+            return [], list(edges)
+        if all(locked):
+            return list(edges), []
 
-        while not chunks[0].locked:
-            chunks = chunks.append(chunks.popleft()) #Rotate left
+        edge_dq = Deque(edges) #Used as circular buffer
+        while edge_dq[0].locked:
+            edge_dq.appendleft(edge_dq.pop()) #Rotate right
+        while not edge_dq[0].locked:
+            edge_dq.append(edge_dq.popleft()) #Rotate left
 
-        for prev_chunk, curr_chunk in zip(chunks[:-1], chunks[1:]):
-            if curr_chunk.locked and not prev_chunk.locked:
-                print([(chunk.id, chunk.locked) for chunk in chunks])
-                raise RuntimeError(f"Found another sequence of locked chunks after first one.")
-    
-        return [chunk.chunk_id for chunk in chunks]
+        sorted_edges = list(edge_dq)
 
-    def split_into_locked_and_not(self, ids_loop: List[int]) -> Tuple[List[int], List[int]]:
-        chunks: List[Chunk] = [self.chunks_dict[id] for id in ids_loop]
-        locked_chunk_ids = [chunk.chunk_id for chunk in chunks if chunk.locked]
-        non_locked_chunk_ids = [chunk.chunk_id for chunk in chunks if not chunk.locked]
-        return [locked_chunk_ids, non_locked_chunk_ids]
+        partition_idx = [edge.locked for edge in sorted_edges].index(False)
+        return sorted_edges[:partition_idx], sorted_edges[partition_idx:]
+
+    def simple_loop_optimization(self, loop: List[int]) -> None:
+        loop.append(loop[0])
+        edges = [
+            self.edges[parent][child]
+            for parent, child in zip(loop[:-1], loop[1:])
+        ]
+        locked_edges, unlocked_edges = self.__split_locked_unlocked(edges)
+        if not unlocked_edges:
+            #Nothing to update
+            return
+
+        locked_transform = Sim3.identity()
+        for edge in locked_edges:
+            locked_transform = locked_transform @ edge.transform
+        locked_transform = locked_transform @ unlocked_edges.pop().transform
+        constraint = locked_transform.inv()
+        unlocked_transforms = [edge.transform for edge in unlocked_edges]
+        unlocked_transforms = refine_sim3_sequence(unlocked_transforms, constraint)
+        for edge, transform in zip(unlocked_edges, unlocked_transforms):
+            edge.transform = transform
+            edge.locked = True
 
     def simple_optimize_loop(self, loop: List[int]) -> None:
-        #Here we do not distinguish betweend locked nodes and not-locked nodes
         loop.append(loop[0])
         edges = list(zip(loop[:-1], loop[1:]))
         sim3_seq = [
@@ -143,57 +230,7 @@ class OptimizationGraph:
         sim3_seq = refine_sim3_loop_with_interpolation(sim3_seq)
         
         for (parent, child), sim3 in zip(edges, sim3_seq):
-            self.edges[parent][child] = sim3
-
-        for id in loop:
-            self.chunks_dict[id].locked = True
-
-    def optimize_loop_with_sorting(self, loop: List[int]) -> None:
-        sorted_loop = self.sort_locked_chunks_first_in_loop(loop)
-        locked, to_optimize = self.split_into_locked_and_not(sorted_loop)
-        if not to_optimize:
-            return
-        
-        if not locked:
-            to_optimize.append(to_optimize[0])
-            to_optimize_edges = list(zip(to_optimize[:-1], to_optimize[1:]))
-            sim3_seq = [
-                self.edges[parent][child]
-                for parent, child in to_optimize_edges
-            ]
-            sim3_seq = refine_sim3_sequence(
-                sim3_seq,
-                Sim3.identity(),
-            )
-        else:
-            locked.insert(0, to_optimize[-1])
-            locked_edges = [
-                (parent, child)
-                for parent, child in zip(locked[:-1], locked[1:])
-            ]
-            locked_transform = Sim3.identity()
-            for parent, child in locked_edges:
-                locked_transform = locked_transform @ self.edges[parent][child]
-            
-            to_optimize.insert(0, locked[-1])
-            to_optimize_edges = [
-                (parent, child)
-                for parent, child in zip(to_optimize[:-1], to_optimize[:1])
-            ]
-            sim3_seq = [
-                self.edges[parent][child]
-                for parent, child in to_optimize_edges
-            ]
-            sim3_seq = refine_sim3_sequence(
-                sim3_seq,
-                locked_transform.inv()
-            )
-
-        for (child, parent), sim3 in zip(to_optimize_edges, sim3_seq):
-            self.edges[parent][child] = sim3
-
-        for id in to_optimize:
-            self.chunks_dict[id].locked = True
+            self.edges[parent][child].transform = sim3
 
     def optimize(self) -> None:
         if not self.loops_to_optimize:
@@ -204,35 +241,46 @@ class OptimizationGraph:
 
     def update_chunks_tree(
         self,
-        root: int=-1,
+        root: int|None = None,
         world_transform: Sim3|None=None,
         updated: List[int] = []
     ) -> None:
-        if root == -1:
+        #
+        if root is None:
             root = self.root
         if world_transform is None:
             world_transform = Sim3.identity()
-        
-        if root in updated:
-            return
 
-        chunk = addict.Dict(dict(self.chunk_repo.get(root)))
-        transform = Sim3Align()
-        transform.sim3 = world_transform
-        chunk = transform.transform(chunk)
-        self.chunk_repo.append(root, chunk)
-        updated += [root]
+        if world_transform != Sim3.identity(): #update only when there's an actual change
+            chunk = addict.Dict(dict(self.chunk_repo.get(root)))
+            transform = Sim3Align()
+            transform.sim3 = world_transform
+            chunk = transform.transform(chunk)
+            self.update_storage(root, chunk)
+
+        updated = updated + [root]
+        print(f"Updating chunk {root} with global transform {world_transform}")
 
         if not self.edges[root]:
             return
         for child in self.edges[root]:
+            if child in updated:
+                continue
+            rel_transform = self.edges[root][child].transform
             self.update_chunks_tree(
                 root = child,
-                world_transform = world_transform@self.edges[root][child],
+                world_transform = world_transform @ rel_transform,
                 updated = updated
             )
-            self.edges[root][child] = Sim3.identity()
+            self.edges[root][child].transform = Sim3.identity()
 
     def finish(self) -> None:
         print("Updating all chunks")
         self.update_chunks_tree()
+
+    def update_storage(self, chunk_id: int, data: Any) -> None:
+        #FIXME. This violates the Separation of concerns principle
+        if chunk_id in self.chunk_cache:
+            self.chunk_cache.append(chunk_id, data)
+        self.chunk_repo.append(chunk_id, data)
+
