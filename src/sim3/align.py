@@ -17,6 +17,27 @@ from .third_party.vggt_long.sim3_utils import robust_weighted_estimate_sim3
 from .sim3 import Sim3
 
 
+def sim3_transform(
+    transform: Sim3,
+    preds: Dict[str, np.ndarray]
+) -> Dict[str, np.ndarray]:
+    s, R, t = transform.astuple()
+    new_preds = copy(preds)
+    new_preds.depth = s*preds.depth
+    
+    se3_t_inv = Sim3(1.0, R, t).inv().asmatrix()
+    
+    new_extrinsics = []
+    for extrinsic in preds.extrinsic:
+        extrinsic = as_homogeneous(extrinsic).copy()
+        extrinsic[:3, 3] *= s
+        new_extrinsic = (extrinsic @ se3_t_inv)[:3]
+        new_extrinsics.append(new_extrinsic[None, ...])
+    new_preds.extrinsic = np.vstack(new_extrinsics)
+
+    return new_preds
+
+
 def vggtlong_est_scenes_transform(
     src_preds: Dict[str, np.ndarray],
     tgt_preds: Dict[str, np.ndarray]
@@ -83,22 +104,7 @@ class Sim3Align:
         return self.transform(src_preds)
 
     def transform(self, preds: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
-        s, R, t = self.sim3.astuple()
-        new_preds = copy(preds)
-        new_preds.depth = s*preds.depth
-        
-        se3_t_inv = Sim3(1.0, R, t).inv().asmatrix()
-        
-        new_extrinsics = []
-        for extrinsic in preds.extrinsic:
-            extrinsic = as_homogeneous(extrinsic).copy()
-            extrinsic[:3, 3] *= s
-            new_extrinsic = (extrinsic @ se3_t_inv)[:3]
-            new_extrinsics.append(new_extrinsic[None, ...])
-        new_preds.extrinsic = np.vstack(new_extrinsics)
-
-        return new_preds
-
+        return sim3_transform(self.sim3, preds)
 
 class VggtlongAlign(Sim3Align):
     def fit(

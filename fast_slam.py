@@ -249,17 +249,18 @@ def video_processing(frame_q: Queue, kframes_q: Queue, preds_q: Queue, model_rea
 
 
 def prediction_aligning(predictions_q: Queue) -> None:
-    from src.sim3 import VggtlongAlign, OptimizationGraph
+    from src.sim3 import VggtlongAlign, OptimizationGraph, sim3_transform
     from src.storage import NdarrayRepository, FIFOCache
+    from src.sim3.ppgraph import OptimizationGraph
+    from src.sim3.myg2o import GaussNewton
 
     chunks_cache = FIFOCache(2)
     chunks_repo = NdarrayRepository('output/chunks', clear=True)
-    transform_graph = OptimizationGraph(chunks_cache, chunks_repo, VggtlongAlign)
+    graph = OptimizationGraph(GaussNewton, chunks_cache, chunks_repo, VggtlongAlign)
 
     registered_ids = []
     chunk_cnt = 0
 
-    os.makedirs('preds', exist_ok=True)
     while True:
         curr_preds = predictions_q.get()
         if curr_preds is None:
@@ -267,11 +268,20 @@ def prediction_aligning(predictions_q: Queue) -> None:
         
         chunks_cache.append(chunk_cnt, curr_preds) #Stores chunk in cache
         chunks_repo.append(chunk_cnt, asdict(curr_preds)) #Stores chunk in disk
-        transform_graph.append(chunk_cnt, curr_preds.ids)
+        graph.append(chunk_cnt, curr_preds.ids)
+        if graph.requires_optimization:
+            graph.optimize(10)
 
         registered_ids += list(curr_preds.ids)
 
         chunk_cnt += 1
+    
+    transformed_chunks_repo = NdarrayRepository('output/aligned_chunks', clear=True)
+    for id in chunks_repo.list_all_ids():
+        chunk = Dict(chunks_repo.get(id, copy=True))
+        transform = graph.get_absolute_transform([id])[0]
+        transformed_chunk = sim3_transform(transform, chunk)
+        transformed_chunks_repo.append(id, transformed_chunk)
 
 
 def main():
