@@ -3,6 +3,7 @@ from typing import Tuple, Any
 
 import numpy as np
 from scipy.spatial.transform import Rotation
+import pypose as pp
 
 
 class Sim3:
@@ -17,6 +18,15 @@ class Sim3:
             1.0,
             np.eye(3, dtype=np.float32),
             np.zeros(3, dtype=np.float32)
+        )
+
+    @staticmethod
+    def from_pypose(sim3: pp.Sim3) -> "Sim3":
+        R = Rotation(sim3.rotation()).as_matrix()
+        return Sim3(
+            sim3.scale().item(),
+            R,
+            sim3.translation().numpy()
         )
 
     def copy(self) -> "Sim3":
@@ -99,3 +109,11 @@ class Sim3:
             root_to_n = root_to_n @ root
 
         return root
+
+    def aspypose(self) -> pp.Sim3:
+        data = np.concatenate([
+            self.t,
+            Rotation.from_matrix(self.R).as_quat(),
+            np.array(self.s).reshape((1,))
+        ])
+        return pp.Sim3(data)

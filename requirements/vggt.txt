@@ -12,3 +12,6 @@ opencv-python
 #Visual Place Recognition dependencies
 addict
 pandas
+
+#slam dependencies
+pypose

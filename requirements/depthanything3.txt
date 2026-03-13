@@ -14,6 +14,7 @@ safetensors
 fastapi
 uvicorn
 requests
+pypose #Already used in one of the list.
 
 #Required to use DepthAnything Api
 moviepy==1.0.3
