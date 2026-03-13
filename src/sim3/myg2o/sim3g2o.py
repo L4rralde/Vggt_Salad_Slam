@@ -49,7 +49,7 @@ class Sim3Edge(Edge):
 class Sim3Solver(Solver):
     def residual(self, parent_est: pp.Sim3, child_est: pp.Sim3, meas: pp.Sim3) -> torch.Tensor:
         prediction = parent_est.Inv() @ child_est
-        return (meas.Inv() @ prediction).Log()
+        return (meas.Inv() @ prediction).Log().tensor()
 
     def edge_jacobian(self, edge: Sim3Edge) -> torch.Tensor:
         parent_est = edge.parent.estimate.clone().requires_grad_(True)

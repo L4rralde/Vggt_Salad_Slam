@@ -47,7 +47,7 @@ class Solver(ABC):
     def loss(self, edges: List[Edge]) -> None:
         acc = 0.0
         for edge in edges:
-            residual = self.edge_residual(edge)
+            residual = self.edge_residual(edge).unsqueeze(1) #m x 1
             edge_loss = residual.T @ edge.information @ residual
             acc = acc + edge_loss
         return acc
