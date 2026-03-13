@@ -11,8 +11,6 @@ class GaussNewton(Algorithm):
         for _ in range(n_iter):
             H, b = self.compute_h_and_b()
             d = torch.linalg.solve(H, -b).view(self.n, self.m) #Descent direction
-            print("||d||", torch.linalg.norm(d))
-            print("Loss:", self.solver.loss(self.edges))
             #Now we must compute 
             if torch.linalg.norm(d) < self.eps:
                 break
