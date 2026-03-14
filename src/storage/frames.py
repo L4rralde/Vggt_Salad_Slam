@@ -10,7 +10,7 @@ class FrameRepository(Repository):
         super().__init__(root, "FRAMES", clear)
 
     def _init_db(self, clear: bool) -> None:
-        if not bool:
+        if not clear:
             return
         conn = self._get_conn()
         cursor = conn.cursor()
