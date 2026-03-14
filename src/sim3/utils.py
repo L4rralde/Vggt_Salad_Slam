@@ -26,10 +26,10 @@ def closed_form_se3_inv(se3_mat):
     return inv
 
 
-def get_conf_mask(conf):
-    lower = np.percentile(conf, 40)
-    upper = np.percentile(conf, 80)
-    conf_thresh = min(max(1.05, lower), upper)
+def get_conf_mask(conf, lower_p: float=40.0, min_conf: float =1.05, upper_p: float=80.0):
+    lower = np.percentile(conf, lower_p)
+    upper = np.percentile(conf, upper_p)
+    conf_thresh = min(max(min_conf, lower), upper)
     mask = (conf > conf_thresh)
 
     return mask
