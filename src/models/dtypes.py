@@ -1,5 +1,5 @@
-from typing import Any, Optional, List
-from dataclasses import dataclass
+from typing import Any, Optional, List, Dict
+from dataclasses import dataclass, asdict
 
 import torch
 import numpy as np
@@ -20,3 +20,24 @@ class Prediction:
     intrinsic: np.ndarray
     images: np.ndarray
     ids: Optional[List[int]] = None
+
+    @classmethod
+    def from_da3(cls, preds: Dict[str, np.ndarray]):
+        return cls(
+            preds['depth'],
+            preds['conf'],
+            preds['extrinsics'],
+            preds['intrinsics'],
+            preds['processed_images'],
+        )
+
+    @classmethod
+    def from_vggt(cls, preds: Dict[str, np.ndarray]):
+        return cls(**preds)
+
+    @classmethod
+    def from_dict(cls, preds: Dict[str, np.ndarray]):
+        return cls(**preds)
+
+    def asdict(self) -> Dict[str, np.ndarray]:
+        return asdict(self)
