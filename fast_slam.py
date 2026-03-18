@@ -1,9 +1,7 @@
-import os
 from typing import List, Tuple
 from multiprocessing import Queue
 from dataclasses import dataclass, asdict
 from time import perf_counter, sleep, time
-import gc
 
 import cv2
 import numpy as np
@@ -12,8 +10,7 @@ import torch.multiprocessing as mp
 from PIL import Image
 from addict import Dict
 
-from src.models import ViewPrediction, Prediction
-
+from slam_utils import cv2_to_pil, pil_to_cv2, get_publisher
 
 @dataclass
 class Frame:
@@ -22,19 +19,12 @@ class Frame:
     img: Image.Image
 
 
-def cv2_to_pil(img: np.ndarray) -> Image.Image:
-    cv_frame_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    pil_frame = Image.fromarray(cv_frame_rgb)
-    return pil_frame
 
-def pil_to_cv2(img: Image.Image) -> np.ndarray:
-    pil_data = img.convert('RGB')
-    return np.array(pil_data)[:, :, ::-1]
 
 def video_publisher(video_path: str, frame_q: Queue, model_ready: mp.Event) -> None:
-    video = cv2.VideoCapture(video_path)
-    fps = video.get(cv2.CAP_PROP_FPS)
-    if not fps:
+    video = get_publisher(video_path)
+    fps = video.get_fps()
+    if fps <= 0:
         print("WARNING. Could not get FPS of the video. Defaulting to 30 fps")
         fps = 30.0
     period = 1.0/fps
@@ -43,8 +33,8 @@ def video_publisher(video_path: str, frame_q: Queue, model_ready: mp.Event) -> N
     print(f"Playing video at {fps} FPS")
     prev_time = time()
     while True:
-        ret, frame = video.read()
-        if not ret:
+        frame = video.read()
+        if frame is None:
             frame_q.put(None)
             print("Finished playing video")
             break
