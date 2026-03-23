@@ -1,0 +1,23 @@
+#Map anything
+huggingface_hub
+hydra-core
+natsort
+opencv-python-headless==4.10.0.84
+orjson
+pillow-heif
+plyfile
+python-box
+rerun-sdk~=0.24.1
+safetensors
+tensorboard
+tqdm
+trimesh
+uniception
+#API
+fastapi
+uvicorn
+requests
+
+#slam dependencies
+pypose #Latest When installed, 0.7.5
+opencv-python==4.10.0.84 #Not the headless version

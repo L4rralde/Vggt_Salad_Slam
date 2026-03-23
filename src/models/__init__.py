@@ -15,6 +15,9 @@ def get_model(
     elif 'vggt' in backbone_arch.lower():
         from .vggt_salad import VggtSaladSplit
         model = VggtSaladSplit(vpr_repo)
+    elif 'mapanything' in backbone_arch.lower():
+        from .mapanything_salad import MapAnythingSaladSplit
+        model = MapAnythingSaladSplit(vpr_repo)
     else:
         raise ValueError(f"Backbone {backbone_arch} not supported")
 

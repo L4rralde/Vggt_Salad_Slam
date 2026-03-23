@@ -20,6 +20,7 @@ class Prediction:
     intrinsic: np.ndarray
     images: np.ndarray
     ids: Optional[List[int]] = None
+    mask: Optional[np.ndarray] = None #For mapanything
 
     @classmethod
     def from_da3(cls, preds: Dict[str, np.ndarray]):
