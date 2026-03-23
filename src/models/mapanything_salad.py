@@ -42,6 +42,8 @@ class MapAnythingSaladSplit:
         return t_imgs
 
     def views_encoding(self, pil_img_list: List[Image.Image]) -> Dict[str, torch.Tensor]:
+        #Let's use autocast to check if gets faster. It does, like 2x
+        amp_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
         images = self.preprocess_images(pil_img_list).to(self.device)
 
         # Get input shape of the images, number of views, and batch size per view
@@ -51,14 +53,15 @@ class MapAnythingSaladSplit:
 
         #To autocast or to not autocast. Do not autocast.
         with torch.no_grad():
-            patch_tokens = self.backbone.dino_forward(images)
-            descriptor = self.model.aggregator(
-                self.backbone.prepare_tokens_for_salad(
-                    patch_tokens,
-                    height//self.backbone.PATCH_SIZE,
-                    width//self.backbone.PATCH_SIZE
+            with torch.autocast('cuda', enabled=True, dtype=amp_dtype):
+                patch_tokens = self.backbone.dino_forward(images)
+                descriptor = self.model.aggregator(
+                    self.backbone.prepare_tokens_for_salad(
+                        patch_tokens,
+                        height//self.backbone.PATCH_SIZE,
+                        width//self.backbone.PATCH_SIZE
+                    )
                 )
-            )
 
         view_preds = ViewPrediction(
             images.cpu(),
