@@ -124,7 +124,7 @@ class MapAnythingSaladSplit:
         prediction = Prediction(
             depth=preds_dict['depth_z'].squeeze(-1).cpu().numpy(),
             depth_conf=preds_dict['conf'].cpu().numpy(),
-            extrinsic=preds_dict['camera_poses'][:, :4].cpu().numpy(), #TODO. check if this is world to cam or cam to world
+            extrinsic=torch.linalg.inv(preds_dict['camera_poses'][:, :4]).cpu().numpy(), #Cam poses are cam to world. We need world to cam
             intrinsic=preds_dict['intrinsics'].cpu().numpy(),
             images=preds_dict['img_no_norm'].permute(0, 3, 1, 2).cpu().numpy(),
             mask=preds_dict['mask'].squeeze(-1).cpu().numpy()
