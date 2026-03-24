@@ -97,28 +97,32 @@ class MapAnythingSaladSplit:
 
         with torch.no_grad():
             #with torch.autocast("cuda", enabled=False): As long as this is not inside an enabled autocast, this is not required
-            all_encoder_features_across_views = (
-                self.backbone._map_anything._encode_and_fuse_optional_geometric_inputs(
-                    views, all_encoder_features_across_views
+            with torch.autocast('cuda', enabled=False):
+                all_encoder_features_across_views = (
+                    self.backbone._map_anything._encode_and_fuse_optional_geometric_inputs(
+                        views, all_encoder_features_across_views
+                    )
                 )
-            )
 
-            final_info_sharing_multi_view_feat, intermediate_info_sharing_multi_view_feat = self.backbone.alternate_attention(
-                all_encoder_features_across_views,
-                all_encoder_registers_across_views,
-                batch_size_per_view = 1
-            )
+            amp_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+            with torch.autocast('cuda', enabled=True, dtype=amp_dtype):
+                final_info_sharing_multi_view_feat, intermediate_info_sharing_multi_view_feat = self.backbone.alternate_attention(
+                    all_encoder_features_across_views,
+                    all_encoder_registers_across_views,
+                    batch_size_per_view = 1
+                )
 
-            res = self.backbone.heads_forward(
-                all_encoder_features_across_views,
-                final_info_sharing_multi_view_feat,
-                intermediate_info_sharing_multi_view_feat,
-                num_views,
-                img_shape
-            )
+                res = self.backbone.heads_forward(
+                    all_encoder_features_across_views,
+                    final_info_sharing_multi_view_feat,
+                    intermediate_info_sharing_multi_view_feat,
+                    num_views,
+                    img_shape
+                )
 
         #Compute intrinsics, extrinsics, mask, and more (?)
-        res = self.backbone.postprocess_model_outputs_for_inference(res, views)
+        with torch.autocast('cuda', enabled=False):
+            res = self.backbone.postprocess_model_outputs_for_inference(res, views)
         preds_dict = preds_dict_list_to_dict(res)
         
         #Now map to Prediction class and we are done.
