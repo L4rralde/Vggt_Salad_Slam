@@ -124,7 +124,7 @@ class MapAnythingSaladSplit:
         prediction = Prediction(
             depth=preds_dict['depth_z'].squeeze(-1).cpu().numpy(),
             depth_conf=preds_dict['conf'].cpu().numpy(),
-            extrinsic=torch.linalg.inv(preds_dict['camera_poses'][:, :4]).cpu().numpy(), #Cam poses are cam to world. We need world to cam
+            extrinsic=torch.linalg.inv(preds_dict['camera_poses']).cpu().numpy()[:, :3], #Cam poses are cam to world. We need world to cam. Fixme we only store 3 rows per matrix
             intrinsic=preds_dict['intrinsics'].cpu().numpy(),
             images=preds_dict['img_no_norm'].permute(0, 3, 1, 2).cpu().numpy(),
             mask=preds_dict['mask'].squeeze(-1).cpu().numpy()
