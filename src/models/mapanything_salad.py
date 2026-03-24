@@ -38,7 +38,8 @@ class MapAnythingSaladSplit:
         if isinstance(images, list):
             t_imgs = torch.cat([img.unsqueeze(0) for img in images])
         elif isinstance(images, torch.Tensor):
-            t_imgs = images.squeeze(0)
+            #t_imgs = images.squeeze(0) #Maybe we want to keep the batch size
+            t_imgs = images
         return t_imgs
 
     def views_encoding(self, pil_img_list: List[Image.Image]) -> Dict[str, torch.Tensor]:
