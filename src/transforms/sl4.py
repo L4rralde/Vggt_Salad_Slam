@@ -25,7 +25,7 @@ class SL4:
         x12 = log_mat[0,0]
         x13 = log_mat[1,1] + x12
         x14 = -log_mat[3,3]
-        return np.ndarray([
+        return np.asarray([
             log_mat[0,1], log_mat[0,2], log_mat[0,3],
             log_mat[1,0], log_mat[1,2], log_mat[1,3],
             log_mat[2,0], log_mat[2,1], log_mat[2,3],
@@ -35,14 +35,14 @@ class SL4:
 
     @classmethod
     def Exp(cls, x: np.ndarray) -> "SL4":
-        assert x.shape == (15)
+        assert x.shape == (15,)
         
         d11 = x[12]
         d22 = -x[12] + x[13]
         d33 = -x[13] + x[14]
         d44 = -x[14]
 
-        mat = np.ndarray([
+        mat = np.asarray([
             [d11, x[0], x[1], x[2]],
             [x[3], d22, x[4], x[5]],
             [x[6], x[7], d33, x[8]],
@@ -50,3 +50,21 @@ class SL4:
         ])
 
         return cls(expm(mat))
+
+    @staticmethod
+    def remove_reflection(mat: np.ndarray) -> np.ndarray:
+        """
+        Following official SL4 implementation in GTSAM:
+        We can ensure the transformation does not reflect points
+        by modifying it via SVD decomposition.
+        Parameters:
+            mat: Any 4x4 matrix with not null determinant.
+        """
+        assert mat.shape == (4,4)
+        U, S, VH = np.linalg.svd(mat)
+        det_UV = np.linalg.det(U @ VH)
+        if det_UV < 0.0:
+            print("[WARNING]. Found transformation with reflection")
+            U[:, -1] *= -1
+        corrected_mat = (U * S) @ VH
+        return corrected_mat

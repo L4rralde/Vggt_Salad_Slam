@@ -16,7 +16,7 @@ import torch
 from scipy.spatial.transform import Rotation as scipy_R
 import pypose as pp
 
-from .sl4 import SL4
+from sl4 import SL4
 
 
 NP_DTYPE = np.float32
@@ -40,6 +40,9 @@ class Transform(ABC):
     def __copy__(self) -> "Transform":
         raise NotImplementedError()
 
+    def copy(self):
+        return self.__copy__()
+
     @abstractclassmethod
     def __repr__(self) -> str:
         raise NotADirectoryError()
@@ -51,6 +54,18 @@ class Transform(ABC):
     @abstractclassmethod
     def __matmul__(self, other: "Transform") -> "Transform":
         raise NotImplementedError()
+
+    def __eq__(self, other: "Transform") -> "Transform":
+        return np.array_equal(self.as_matrix(), other.as_matrix())
+
+    @staticmethod
+    def all_close(a: "Transform", other: "Transform", rtol: float=1e-05, atol: float=1e-08) -> bool:
+        return np.allclose(
+            a.as_matrix(),
+            other.as_matrix(),
+            rtol=rtol,
+            atol=atol
+        )
     
     @abstractclassmethod
     def tangent(self) -> object:
@@ -64,6 +79,12 @@ class Transform(ABC):
     def __call__(self, *args: Any) -> Any:
         #Transforms points
         raise NotImplementedError()
+
+
+def all_close(a: Transform, b: Transform, rtol: float=1e-05, atol: float=1e-08) -> bool:
+    assert type(a) == type(b)
+    return type(a).all_close(a, b, rtol=rtol, atol=atol)
+
 
 class Homography(Transform):
     """
@@ -101,9 +122,7 @@ class Homography(Transform):
     By the moment, this class probably won't be implemented.
 
     Parameters:
-        A: A = skR. 
-        t: translation vector
-        v: perspective vector
+        mat: Any 4x4 matrix with positive determinant
     """
     def __init__(
         self,
@@ -113,6 +132,15 @@ class Homography(Transform):
         mat = mat/mat[3, 3]
         assert np.linalg.det(mat[:3, :3]) > 1e-6
         self.mat: np.ndarray = mat
+        
+        self.perspective: np.ndarray = self.mat[3, :3]
+        self.translation: np.ndarray = self.mat[:3, 3]
+        #A = sKR. A^{-1} = 1/s R^T K^{-1} = R^T (K^{-1}/s): QR Decomposition
+        R_t, sK_inv = np.linalg.qr(self.mat[:3, :3])
+        self.rotation = np.transpose(R_t)
+        sK = np.linalg.solve(sK_inv, np.eye(3)) #Instead of np.linalg.inv
+        self.scale = sK[2, 2]
+        self.K = sK/self.scale
 
     @classmethod
     def identity(cls) -> "Homography":
@@ -137,12 +165,23 @@ class Homography(Transform):
     def __matmul__(self, other: "Homography") -> "Homography":
         return Homography(self.mat @ other.mat)
 
+    def __eq__(self, other: "Homography") -> bool:
+        return np.array_equal(self.mat, other.mat)
+
     def tangent(self) -> torch.Tensor:
-        return torch.Tensor(SL4(self.mat).Log(), dtype=TORCH_DTYPE)
+        return torch.Tensor(SL4(self.mat).Log()).to(TORCH_DTYPE)
+
+    @classmethod
+    def from_tangent(cls, tangent: torch.Tensor) -> "SamePerspectiveHomography":
+        sl4_mat = SL4.Exp(tangent.cpu().numpy()).mat
+        homography_mat = sl4_mat/sl4_mat[3, 3]
+        return cls(homography_mat)
 
     def __call__(self, x: np.ndarray) -> np.ndarray:
-        if len(x.shape()) == 1:
-            x = x[None, :]
+        original_shape = x.shape
+        assert len(original_shape) <= 2
+        if len(x.shape) == 1:
+            x = x[None, ...]
         n, d = x.shape
         assert d == 3
 
@@ -153,7 +192,7 @@ class Homography(Transform):
         p = x @ A.T + t #Shape (n, 3)
         w = x @ v + 1.0 # shape (n,)
         w = np.repeat(np.expand_dims(w, axis=1), 3, axis=1) #shape (n, 3)
-        return p * w
+        return (p * w).reshape(original_shape)
 
 
 class SamePerspectiveHomography(Transform):
@@ -171,7 +210,77 @@ class SamePerspectiveHomography(Transform):
     Those are 12 DoF.
     Still, there's a problem when all we have are planes. So sad.
     This class probably WILL be implemented.
+    Since [skR | t] is a 3x4 matrix with 12 DoF. Let's use it as input
+    Parameters:
+        mat: 3x4 mat. first 3 rows of the homogeneous matrix.
     """
+    def __init__(self, mat: np.ndarray) -> None:
+        assert mat.shape == (3, 4)
+        assert np.linalg.det(mat[:3, :3]) > 1e-6
+        self.mat = np.zeros((4, 4), dtype=mat.dtype)
+        self.mat[:3] = mat
+        self.mat[3,3] = 1.0
+
+        self.translation = self.mat[:3, 3]
+
+        #A = sKR. A^{-1} = 1/s R^T K^{-1} = R^T (K^{-1}/s): QR Decomposition
+        R_t, sK_inv = np.linalg.qr(self.mat[:3, :3])
+        self.rotation = np.transpose(R_t)
+        sK = np.linalg.solve(sK_inv, np.eye(3)) #Instead of np.linalg.inv
+        self.scale = sK[2, 2]
+        self.K = sK/self.scale
+    
+    @classmethod
+    def identity(cls) -> "SamePerspectiveHomography":
+        return cls(np.eye(3, M=4, dtype=NP_DTYPE))
+
+    def inv(self) -> "SamePerspectiveHomography":
+        pass
+        #[A t| 0 1][A' t'| 0 1] = [AA' At' + t | 0 1]
+        # AA' = A'A => A' = A^{-1}. A is 3x3 9DoF.
+        # At' + t = 0 => t' = -A^{-1}t
+        A = self.mat[:3, :3]
+        t = self.mat[:3, 3]
+        A_prime = np.linalg.inv(A)
+        t_prime = - A_prime @ t
+        mat = np.zeros((3, 4), dtype=self.mat.dtype)
+        mat[:3, :3] = A_prime
+        mat[:3, 3] = t_prime
+        return SamePerspectiveHomography(mat)
+
+    def __copy__(self) -> "SamePerspectiveHomography":
+        return SamePerspectiveHomography(self.mat.copy()[:3])
+
+    def __repr__(self) -> str:
+        return f"SamePerspectiveHomography(mat: {self.mat.flatten()})"
+
+    def as_matrix(self) -> np.ndarray:
+        return self.mat
+
+    def __matmul__(self, other: "SamePerspectiveHomography") -> "SamePerspectiveHomography":
+        result_mat = (self.mat @ other.mat)[:3]
+        return SamePerspectiveHomography(result_mat)
+
+    def tangent(self) -> torch.Tensor:
+        return torch.Tensor(SL4(self.mat).Log()).to(TORCH_DTYPE)
+
+    @classmethod
+    def from_tangent(cls, tangent: torch.Tensor) -> "SamePerspectiveHomography":
+        sl4_mat = SL4.Exp(tangent.cpu().numpy()).mat
+        homography_mat = sl4_mat/sl4_mat[3, 3]
+        return cls(homography_mat[:3])
+
+    def __call__(self, x: np.ndarray) -> np.ndarray:
+        original_shape = x.shape
+        assert len(original_shape) <= 2
+        A = self.mat[:3, :3]
+        t = self.mat[:3, 3]
+        if len(x.shape) == 1:
+            x = x[None, ...]
+        n, d = x.shape
+        assert d == 3
+        #A is 3x3. x is nx3. A x^T is 3 xn. Hence (A x^T)^T = x A^t
+        return (x @ A.T + t).reshape(original_shape)
 
 
 class VggtSlam2Transform(Transform):
@@ -192,7 +301,59 @@ class VggtSlam2Transform(Transform):
     to compute R and t.
     When does this work? When R and t can be trivially predicted.
     Properly said, K is not the intrinsic matrix, but is upper triangular.
+    Let's allow any upper triangular matrix. sK is 3x3 6 DoF.
+    Parameters:
+        sK_mat: np.ndarray of shape 3x3 and upper triangular
     """
+    def __init__(self, sK_mat: np.ndarray) -> None:
+        assert sK_mat.shape == (3, 3)
+        assert np.allclose(sK_mat, np.triu(sK_mat))
+        self.sK_mat: np.ndarray = np.triu(sK_mat)
+        self.scale: float = sK_mat[2, 2]
+        self.K: np.ndarray = sK_mat/self.scale
+
+    @classmethod
+    def identity(cls) -> "VggtSlam2Transform":
+        return cls(np.eye(3, dtype=NP_DTYPE))
+
+    def inv(self) -> "VggtSlam2Transform":
+        #[Triu | 0 \\ 0 1][Triu' | 0 \\ 0 1] = [TriuTriu' | 0 \\ 0 | 1]
+        sK_inv = np.linalg.solve(self.sK_mat, np.eye(3))
+        return VggtSlam2Transform(sK_inv)
+
+    def __copy__(self) -> "VggtSlam2Transform":
+        return VggtSlam2Transform(self.sK_mat.copy())
+
+    def __repr__(self) -> str:
+        return f"VggtSlam2Transform(sk: {self.sK_mat.flatten()})"
+
+    def as_matrix(self) -> np.ndarray:
+        mat = np.eye(4, dtype=self.sK_mat.dtype)
+        mat[:3, :3] = self.sK_mat
+        return mat
+
+    def __matmul__(self, other: "VggtSlam2Transform") -> "VggtSlam2Transform":
+        return VggtSlam2Transform(self.sK_mat @ other.sK_mat)
+
+    def tangent(self) -> torch.Tensor:
+        return torch.Tensor(SL4(self.as_matrix()).Log()).to(TORCH_DTYPE)
+
+    @classmethod
+    def from_tangent(cls, tangent: torch.Tensor) -> "VggtSlam2Transform":
+        sl4_mat = SL4.Exp(tangent.cpu().numpy()).mat
+        homography_mat = sl4_mat/sl4_mat[3, 3]
+        assert np.allclose(homography_mat[:3, 3], np.zeros(3))
+        assert np.allclose(homography_mat[3, :3], np.zeros(3))
+        return cls(homography_mat[:3, :3])
+
+    def __call__(self, x: np.ndarray) -> np.ndarray:
+        original_shape = x.shape
+        assert len(original_shape) <= 2
+        if len(original_shape) == 1:
+            x = x[None, ...]
+        n, d = x.shape
+        assert d == 3
+        return (x @ self.sK_mat.T).reshape(original_shape)
 
 
 class SO3(Transform):
@@ -224,7 +385,7 @@ class SO3(Transform):
         return cls(rotation)
 
     def inv(self) -> "SO3":
-        return SO3(np.transpose(self.R))
+        return SO3(np.transpose(self.rotation))
 
     def __copy__(self) -> "SO3":
         return SO3(self.rotation.copy())
@@ -238,7 +399,7 @@ class SO3(Transform):
         return mat
 
     def __matmul__(self, other: "SE3") -> "SE3":
-        return SE3(self.rotation @ other.rotation)
+        return SO3(self.rotation @ other.rotation)
 
     def tangent(self) -> torch.Tensor:
         return pp.SO3(self.quaternion).Log()
@@ -246,7 +407,7 @@ class SO3(Transform):
     @classmethod
     def from_tangent(cls, tangent: torch.Tensor) -> "SO3":
         rotation = scipy_R(tangent.Exp().rotation()).as_matrix()
-        return SO3(rotation)
+        return cls(rotation)
 
     def __call__(self, x: np.ndarray) -> np.ndarray:
         """
@@ -257,11 +418,16 @@ class SO3(Transform):
         This is x' = (R x^T)^T = x R^T
         If x is of shape 3, x^T = x, x'^T = T.   x' = x'^T = R x^T = R x
         """
-        if len(x.shape()) == 1:
-            x = x[None, :]
+        original_shape = x.shape
+        assert len(original_shape) <= 2
+        if len(x.shape) == 1:
+            x = x[None, ...]
         n, d = x.shape
         assert d == 3
-        return x @ self.rotation.T
+        result = x @ self.rotation.T
+        if n == 1:
+            result = np.squeeze(x, axis=0)
+        return result
 
 
 class SE3(SO3):
@@ -285,7 +451,7 @@ class SE3(SO3):
         return SE3(R, t)
 
     def inv(self) -> "SO3":
-        inv_R = np.transpose(self.R)
+        inv_R = np.transpose(self.rotation)
         inv_t = -inv_R @ self.translation
         return SE3(inv_R, inv_t)
 
@@ -300,7 +466,7 @@ class SE3(SO3):
 
     def as_matrix(self) -> np.ndarray:
         mat = super().as_matrix() #SO(3) matrix
-        mat[:3, 3] = self.rotation
+        mat[:3, :3] = self.rotation
         return mat
 
     def __matmul__(self, other: "SE3") -> "SE3":
@@ -313,11 +479,15 @@ class SE3(SO3):
         return pp.SE3(data).Log()
 
     @classmethod
-    def from_tangent(cls, tangent: torch.Tensor) -> SE3:
-        pp_SE3 = tangent.Exp()
-        rotation = scipy_R(pp_SE3.rotation()).as_matrix()
-        translation = pp_SE3.translation()
-        return SE3(rotation, translation)
+    def from_pypose(cls, pp: torch.Tensor) -> "SE3":
+        rotation = scipy_R(pp.rotation()).as_matrix()
+        translation = pp.translation()
+        return cls(rotation, translation)
+
+    @classmethod
+    def from_tangent(cls, tangent: torch.Tensor) -> "SE3":
+        pp_transform = tangent.Exp()
+        return cls.from_pypose(pp_transform)
 
     def __call__(self, x: np.ndarray) -> np.ndarray:
         return super().__call__(x) + self.translation
@@ -345,11 +515,28 @@ class Sim3(SE3):
         self.scale = scale
 
     @classmethod
-    def identity(cls) -> Sim3:
+    def identity(cls) -> "Sim3":
         R = np.eye(3, dtype=NP_DTYPE)
         t = np.zeros(3, dtype=NP_DTYPE)
         s = 1.0
         return Sim3(s, R, t)
+
+    @staticmethod
+    def from_pypose(sim3: pp.Sim3) -> "Sim3":
+        rot = scipy_R(sim3.rotation()).as_matrix()
+        return Sim3(
+            sim3.scale().item(),
+            rot,
+            sim3.translation().numpy()
+        )
+
+    def aspypose(self) -> pp.Sim3:
+        data = np.concatenate([
+            self.translation,
+            scipy_R.from_matrix(self.R).as_quat(),
+            np.array(self.scale).reshape((1,))
+        ])
+        return pp.Sim3(data)
 
     def inv(self) -> "Sim3":
         inv_s = 1.0/self.scale
@@ -424,17 +611,14 @@ class ScaleTransform(Transform):
         return mat
 
     def __matmul__(self, other: "ScaleTransform") -> "ScaleTransform":
-        raise ScaleTransform(self.scale * other.scale)
+        return ScaleTransform(self.scale * other.scale)
 
     def tangent(self) -> torch.Tensor:
-        return torch.Tensor(
-            [np.log(self.scale)],
-            dtype=TORCH_DTYPE
-        )
+        return torch.Tensor([np.log(self.scale)]).to(TORCH_DTYPE)
 
     @classmethod
     def from_tangent(cls, tangent: torch.Tensor) -> "ScaleTransform":
-        s = tangent.cpu()[0].item()
+        s = np.exp(tangent.cpu()[0].item())
         return cls(s)
 
     def __call__(self, x: np.ndarray) -> np.ndarray:
