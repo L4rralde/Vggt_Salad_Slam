@@ -8,11 +8,23 @@
 
 # Let's start with an abc class
 
-
 from abc import ABC, abstractclassmethod
-from typing import Any
+from typing import Any, List
 
 import numpy as np
+import torch
+from scipy.spatial.transform import Rotation as scipy_R
+import pypose as pp
+
+from .sl4 import SL4
+
+
+NP_DTYPE = np.float32
+TORCH_DTYPE = torch.float32
+
+
+def rotmat_to_quat(rotmat: np.ndarray) -> np.ndarray:
+    return scipy_R.from_matrix(rotmat).as_quat()
 
 
 class Transform(ABC):
@@ -33,7 +45,7 @@ class Transform(ABC):
         raise NotADirectoryError()
     
     @abstractclassmethod
-    def asmatrix(self) -> np.ndarray:
+    def as_matrix(self) -> np.ndarray:
         raise NotImplementedError()
 
     @abstractclassmethod
@@ -44,10 +56,14 @@ class Transform(ABC):
     def tangent(self) -> object:
         raise NotImplementedError()
 
+    @abstractclassmethod
+    def from_tangent(tangent: object) -> "Transform":
+        raise NotImplementedError()
+
+    @abstractclassmethod
     def __call__(self, *args: Any) -> Any:
         #Transforms points
         raise NotImplementedError()
-
 
 class Homography(Transform):
     """
@@ -83,8 +99,61 @@ class Homography(Transform):
     Recontruction of planes is really common in real world environments.
     Take walls as an example.
     By the moment, this class probably won't be implemented.
-    """
 
+    Parameters:
+        A: A = skR. 
+        t: translation vector
+        v: perspective vector
+    """
+    def __init__(
+        self,
+        mat: np.ndarray
+    ) -> None:
+        assert mat.shape == (4, 4)
+        mat = mat/mat[3, 3]
+        assert np.linalg.det(mat[:3, :3]) > 1e-6
+        self.mat: np.ndarray = mat
+
+    @classmethod
+    def identity(cls) -> "Homography":
+        return cls(np.eye(4, dtype=NP_DTYPE))
+    
+    @classmethod
+    def from_mat(cls, mat: np.ndarray) -> "Homography":
+        return cls(mat)
+
+    def inv(self) -> "Homography":
+        return Homography(np.linalg.inv(self.mat))
+
+    def __copy__(self) -> "Homography":
+        return Homography(self.mat.copy())
+    
+    def __repr__(self) -> str:
+        return f"Homography(mat: {self.mat.flatten()})"
+
+    def as_matrix(self) -> np.ndarray:
+        return self.mat
+    
+    def __matmul__(self, other: "Homography") -> "Homography":
+        return Homography(self.mat @ other.mat)
+
+    def tangent(self) -> torch.Tensor:
+        return torch.Tensor(SL4(self.mat).Log(), dtype=TORCH_DTYPE)
+
+    def __call__(self, x: np.ndarray) -> np.ndarray:
+        if len(x.shape()) == 1:
+            x = x[None, :]
+        n, d = x.shape
+        assert d == 3
+
+        A = self.mat[:3, :3]
+        t = self.mat[:3, 3]
+        v = self.mat[3, :3]
+
+        p = x @ A.T + t #Shape (n, 3)
+        w = x @ v + 1.0 # shape (n,)
+        w = np.repeat(np.expand_dims(w, axis=1), 3, axis=1) #shape (n, 3)
+        return p * w
 
 
 class SamePerspectiveHomography(Transform):
@@ -93,7 +162,7 @@ class SamePerspectiveHomography(Transform):
     Let X_i be a point cloud built from view v of reconstruction i.
     Let X_j be a pcd built from the same view but of another reconstruction j.
     We suppose, since they come from the same image, parallel lines are parralels
-    and relative angles are the same on both.
+    and relative angles are the same in both.
     Hence we have:
     H = [
         sKR t
@@ -122,31 +191,7 @@ class VggtSlam2Transform(Transform):
     if we need PCDs in world coordinates this won't work, we still need
     to compute R and t.
     When does this work? When R and t can be trivially predicted.
-    """
-
-
-class Sim3(Transform):
-    """
-    The Similiraty(n=3) Lie group.
-    H = [
-        sR t
-        0  1
-    ]
-    7 DoF.
-    Works even when having only planes.
-    3 points are enough to get an estimation
-    """
-
-
-class SE3(Transform):
-    """
-    Special Euclidean (n=3) Lie Group
-    H = [
-        R t
-        0 1
-    ]
-    6 DoF. Used in metric (both pcds' scale is known) reconstruction.
-    When using distance sensors (LiDARs, Time of flight sensors, etc)
+    Properly said, K is not the intrinsic matrix, but is upper triangular.
     """
 
 
@@ -159,7 +204,191 @@ class SO3(Transform):
     ]
     3 DoF
     """
+    def __init__(self, rotation: np.ndarray|List) -> None:
+        self.rotation: np.ndarray = np.empty((3, 3), dtype=NP_DTYPE)
+        if isinstance(rotation, np.ndarray):
+            self.rotation = rotation
+        else:
+            self.rotation = scipy_R(rotation).as_matrix()
 
+    @property
+    def quaternion(self) -> np.ndarray:
+        """
+        Gets the quaternion q = (x, y, z, w)
+        """
+        return rotmat_to_quat(self.rotation)
+
+    @classmethod
+    def identity(cls) -> "SO3":
+        rotation = np.eye(3, dtype=NP_DTYPE)
+        return cls(rotation)
+
+    def inv(self) -> "SO3":
+        return SO3(np.transpose(self.R))
+
+    def __copy__(self) -> "SO3":
+        return SO3(self.rotation.copy())
+
+    def __repr__(self) -> str:
+        return f"SO3(q: {self.quaternion})"
+
+    def as_matrix(self) -> np.ndarray:
+        mat = np.eye(4, dtype=NP_DTYPE)
+        mat[:3, :3] = self.rotation
+        return mat
+
+    def __matmul__(self, other: "SE3") -> "SE3":
+        return SE3(self.rotation @ other.rotation)
+
+    def tangent(self) -> torch.Tensor:
+        return pp.SO3(self.quaternion).Log()
+
+    @classmethod
+    def from_tangent(cls, tangent: torch.Tensor) -> "SO3":
+        rotation = scipy_R(tangent.Exp().rotation()).as_matrix()
+        return SO3(rotation)
+
+    def __call__(self, x: np.ndarray) -> np.ndarray:
+        """
+        x' = Rx
+        x = np.ndarray of shape (3,) or (n, 3)
+        If x.shape == (n, 3). Then, we must transpose x to have a valid matmul.
+        However, we want the shape of x' to be the same as x. So we transpose the result.
+        This is x' = (R x^T)^T = x R^T
+        If x is of shape 3, x^T = x, x'^T = T.   x' = x'^T = R x^T = R x
+        """
+        if len(x.shape()) == 1:
+            x = x[None, :]
+        n, d = x.shape
+        assert d == 3
+        return x @ self.rotation.T
+
+
+class SE3(SO3):
+    """
+    Special Euclidean (n=3) Lie Group
+    H = [
+        R t
+        0 1
+    ]
+    6 DoF. Used in metric (both pcds' scale is known) reconstruction.
+    When using distance sensors (LiDARs, Time of flight sensors, etc)
+    """
+    def __init__(self, rotation: Any | List, translation: np.ndarray) -> None:
+        super().__init__(rotation)
+        self.translation: np.ndarray = translation
+
+    @classmethod
+    def identity(cls) -> "SO3":
+        R = np.eye(3, dtype=NP_DTYPE)
+        t = np.zeros(3, dtype=NP_DTYPE)
+        return SE3(R, t)
+
+    def inv(self) -> "SO3":
+        inv_R = np.transpose(self.R)
+        inv_t = -inv_R @ self.translation
+        return SE3(inv_R, inv_t)
+
+    def __copy__(self) -> "SO3":
+        return SE3(
+            self.rotation.copy(),
+            self.translation.copy()
+        )
+
+    def __repr__(self) -> str:
+        return f"SE3(quat: {self.quaternion}, t: {self.translation})"
+
+    def as_matrix(self) -> np.ndarray:
+        mat = super().as_matrix() #SO(3) matrix
+        mat[:3, 3] = self.rotation
+        return mat
+
+    def __matmul__(self, other: "SE3") -> "SE3":
+        new_R = self.rotation @ other.rotation
+        new_t = self.rotation @ other.translation + self.translation
+        return SE3(new_R, new_t)
+
+    def tangent(self) -> torch.Tensor:
+        data = np.concatenate([self.translation, self.quaternion])
+        return pp.SE3(data).Log()
+
+    @classmethod
+    def from_tangent(cls, tangent: torch.Tensor) -> SE3:
+        pp_SE3 = tangent.Exp()
+        rotation = scipy_R(pp_SE3.rotation()).as_matrix()
+        translation = pp_SE3.translation()
+        return SE3(rotation, translation)
+
+    def __call__(self, x: np.ndarray) -> np.ndarray:
+        return super().__call__(x) + self.translation
+
+
+
+class Sim3(SE3):
+    """
+    The Similiraty(n=3) Lie group.
+    H = [
+        sR t
+        0  1
+    ]
+    7 DoF.
+    Works even when having only planes.
+    3 points are enough to get an estimation
+    """
+    def __init__(
+        self,
+        scale: float,
+        rotation: Any | List, 
+        translation: np.ndarray
+    ) -> None:
+        super().__init__(rotation, translation)
+        self.scale = scale
+
+    @classmethod
+    def identity(cls) -> Sim3:
+        R = np.eye(3, dtype=NP_DTYPE)
+        t = np.zeros(3, dtype=NP_DTYPE)
+        s = 1.0
+        return Sim3(s, R, t)
+
+    def inv(self) -> "Sim3":
+        inv_s = 1.0/self.scale
+        inv_R = self.rotation.T
+        inv_t = -inv_s * (inv_R @ self.translation)
+        return Sim3(inv_s, inv_R, inv_t)
+
+    def __copy__(self) -> "Sim3":
+        return Sim3(
+            self.scale,
+            self.rotation.copy(),
+            self.translation.copy()
+        )
+
+    def __repr__(self) -> str:
+        return f"Sim3(s: {self.scale:.4f}, quat: {self.quaternion}, t: {self.translation})"
+
+    def as_matrix(self) -> np.ndarray:
+        mat = super().as_matrix()
+        mat[:3, :3] *= self.scale
+        return mat
+
+    def __matmul__(self, other: "Sim3") -> "Sim3":
+        return Sim3(
+            self.scale * other.scale,
+            self.rotation @ other.rotation,
+            (self.scale * self.rotation @ other.translation) + self.translation
+        )
+
+    def tangent(self) -> torch.Tensor:
+        data = np.concatenate([
+            self.translation,
+            self.quaternion,
+            np.array(self.scale).reshape((1,))
+        ])
+        return pp.Sim3(data).Log()
+
+    def __call__(self, x: np.ndarray) -> np.ndarray:
+        return (self.scale * SO3.__call__(self, x)) + self.translation
 
 # Assumption #1. Depth maps are robust, so we can estimate s directly using depthmaps.
 #Hence, we treat s as constant in estimation methods.
@@ -174,34 +403,44 @@ class ScaleTransform(Transform):
     """
     def __init__(self, s: float) -> None:
         assert s > 0
-        self.s = s
+        self.scale = s
 
     @classmethod
     def identity(cls) -> "ScaleTransform":
         return cls(1.0)
 
     def inv(self) -> "ScaleTransform":
-        return ScaleTransform(1/self.s)
+        return ScaleTransform(1/self.scale)
 
     def __copy__(self) -> "ScaleTransform":
-        return ScaleTransform(self.s)
+        return ScaleTransform(self.scale)
 
     def __repr__(self) -> str:
-        return f"ScaleTransform(s = {self.s:.4f})"
+        return f"ScaleTransform(s = {self.scale:.4f})"
 
-    def asmatrix(self) -> np.ndarray:
-        mat = np.eye(4, dtype=np.float32)
-        mat[:3, :3] *= self.s
+    def as_matrix(self) -> np.ndarray:
+        mat = np.eye(4, dtype=NP_DTYPE)
+        mat[:3, :3] *= self.scale
         return mat
 
     def __matmul__(self, other: "ScaleTransform") -> "ScaleTransform":
-        raise ScaleTransform(self.s * other.s)
+        raise ScaleTransform(self.scale * other.scale)
 
-    def tangent(self) -> np.ndarray:
-        return np.ndarray([max(1e-6, self.s)], dtype=np.float32)
+    def tangent(self) -> torch.Tensor:
+        return torch.Tensor(
+            [np.log(self.scale)],
+            dtype=TORCH_DTYPE
+        )
 
-    def __call__(self, x: np.ndarray) -> Any:
-        return x[:3, ...] * self.s
+    @classmethod
+    def from_tangent(cls, tangent: torch.Tensor) -> "ScaleTransform":
+        s = tangent.cpu()[0].item()
+        return cls(s)
+
+    def __call__(self, x: np.ndarray) -> np.ndarray:
+        return x * self.scale
+
+
 
 # Special case # 1. K matrix (intrinsics) are the same for all views.
 # Assumption #2.
