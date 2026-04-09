@@ -16,7 +16,7 @@ import torch
 from scipy.spatial.transform import Rotation as scipy_R
 import pypose as pp
 
-from homography.sl4 import SL4
+from .sl4 import SL4
 
 
 NP_DTYPE = np.float32
@@ -28,6 +28,10 @@ def rotmat_to_quat(rotmat: np.ndarray) -> np.ndarray:
 
 
 class Transform(ABC):
+    @abstractclassmethod
+    def from_matrix(cls) -> "Transform":
+        raise NotImplementedError()
+
     @abstractclassmethod
     def identity(cls) -> "Transform":
         raise NotImplementedError()
@@ -130,7 +134,12 @@ class Homography(Transform):
     ) -> None:
         assert mat.shape == (4, 4)
         mat = mat/mat[3, 3]
-        assert np.linalg.det(mat[:3, :3]) > 1e-6
+        if np.linalg.det(mat[:3, :3]) < 1e-6:
+            det = np.linalg.det(mat[:3, :3])
+            print(
+                f"Warning: This homography may include reflection. Reflection could be removed. det = {det}"
+            )
+            mat[:3, :3] *= -1
         self.mat: np.ndarray = mat
         
         self.perspective: np.ndarray = self.mat[3, :3]
@@ -147,7 +156,7 @@ class Homography(Transform):
         return cls(np.eye(4, dtype=NP_DTYPE))
     
     @classmethod
-    def from_mat(cls, mat: np.ndarray) -> "Homography":
+    def from_matrix(cls, mat: np.ndarray) -> "Homography":
         return cls(mat)
 
     def inv(self) -> "Homography":
@@ -231,11 +240,17 @@ class Affine(Transform):
         self.K = sK/self.scale
     
     @classmethod
+    def from_matrix(cls, mat: np.ndarray) -> "Affine":
+        assert mat.shape == (4, 4)
+        zeroh = np.asarray([0, 0, 0, 1])
+        assert np.allclose(mat[3], zeroh)
+        return cls(mat[:3])
+
+    @classmethod
     def identity(cls) -> "Affine":
         return cls(np.eye(3, M=4, dtype=NP_DTYPE))
 
     def inv(self) -> "Affine":
-        pass
         #[A t| 0 1][A' t'| 0 1] = [AA' At' + t | 0 1]
         # AA' = A'A => A' = A^{-1}. A is 3x3 9DoF.
         # At' + t = 0 => t' = -A^{-1}t
@@ -313,6 +328,14 @@ class VggtSlam2Transform(Transform):
         self.K: np.ndarray = sK_mat/self.scale
 
     @classmethod
+    def from_matrix(cls, mat: np.ndarray) -> "VggtSlam2Transform":
+        assert mat.shape == (4, 4)
+        zeroh = np.asarray([0, 0, 0, 1])
+        assert np.allclose(mat[:, 3], zeroh)
+        assert np.allclose(mat[3], zeroh)
+        return cls(mat[:3, :3])
+
+    @classmethod
     def identity(cls) -> "VggtSlam2Transform":
         return cls(np.eye(3, dtype=NP_DTYPE))
 
@@ -372,6 +395,14 @@ class SO3(Transform):
         else:
             self.rotation = scipy_R(rotation).as_matrix()
 
+    @classmethod
+    def from_matrix(cls, mat: np.ndarray) -> "SO3":
+        assert mat.shape == (4, 4)
+        zeroh = np.asarray([0, 0, 0, 1])
+        assert np.allclose(mat[:, 3], zeroh)
+        assert np.allclose(mat[3], zeroh)
+        return cls(mat[:3, :3])
+
     @property
     def quaternion(self) -> np.ndarray:
         """
@@ -398,7 +429,7 @@ class SO3(Transform):
         mat[:3, :3] = self.rotation
         return mat
 
-    def __matmul__(self, other: "SE3") -> "SE3":
+    def __matmul__(self, other: "SO3") -> "SO3":
         return SO3(self.rotation @ other.rotation)
 
     def tangent(self) -> torch.Tensor:
@@ -445,6 +476,13 @@ class SE3(SO3):
         self.translation: np.ndarray = translation
 
     @classmethod
+    def from_matrix(cls, mat: np.ndarray) -> "SE3":
+        assert mat.shape == (4, 4)
+        zeroh = np.asarray([0, 0, 0, 1])
+        assert np.allclose(mat[3], zeroh)
+        return cls(mat[:3, :3], mat[:3, 3])
+
+    @classmethod
     def identity(cls) -> "SO3":
         R = np.eye(3, dtype=NP_DTYPE)
         t = np.zeros(3, dtype=NP_DTYPE)
@@ -467,6 +505,7 @@ class SE3(SO3):
     def as_matrix(self) -> np.ndarray:
         mat = super().as_matrix() #SO(3) matrix
         mat[:3, :3] = self.rotation
+        mat[:3, 3] = self.translation
         return mat
 
     def __matmul__(self, other: "SE3") -> "SE3":
@@ -493,7 +532,6 @@ class SE3(SO3):
         return super().__call__(x) + self.translation
 
 
-
 class Sim3(SE3):
     """
     The Similiraty(n=3) Lie group.
@@ -513,6 +551,19 @@ class Sim3(SE3):
     ) -> None:
         super().__init__(rotation, translation)
         self.scale = scale
+
+    @classmethod
+    def from_matrix(cls, mat: np.ndarray) -> "Sim3":
+        assert mat.shape == (4, 4)
+        zeroh = np.asarray([0, 0, 0, 1])
+        assert np.allclose(mat[3], zeroh)
+        A = mat[:3, :3]
+        det = np.linalg.det(A)
+        assert det > 1e-6
+        s = det**(1/3)
+        R = A/s
+        t = mat[:3, 3]
+        return cls(s, R, t)
 
     @classmethod
     def identity(cls) -> "Sim3":
@@ -591,6 +642,17 @@ class ScaleTransform(Transform):
     def __init__(self, s: float) -> None:
         assert s > 0
         self.scale = s
+
+    @classmethod
+    def from_matrix(cls, mat: np.ndarray) -> "ScaleTransform":
+        assert mat.shape == (4, 4)
+        zeroh = np.asarray([0, 0, 0, 1])
+        assert np.allclose(mat[:, 3], zeroh)
+        assert np.allclose(mat[3], zeroh)
+        s = mat[0,0]
+        mat /= s
+        assert np.allclose(mat[:3, :3], np.eye(3))
+        return cls(mat)
 
     @classmethod
     def identity(cls) -> "ScaleTransform":
