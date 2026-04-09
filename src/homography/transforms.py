@@ -16,7 +16,7 @@ import torch
 from scipy.spatial.transform import Rotation as scipy_R
 import pypose as pp
 
-from sl4 import SL4
+from homography.sl4 import SL4
 
 
 NP_DTYPE = np.float32
@@ -172,7 +172,7 @@ class Homography(Transform):
         return torch.Tensor(SL4(self.mat).Log()).to(TORCH_DTYPE)
 
     @classmethod
-    def from_tangent(cls, tangent: torch.Tensor) -> "SamePerspectiveHomography":
+    def from_tangent(cls, tangent: torch.Tensor) -> "Affine":
         sl4_mat = SL4.Exp(tangent.cpu().numpy()).mat
         homography_mat = sl4_mat/sl4_mat[3, 3]
         return cls(homography_mat)
@@ -195,7 +195,7 @@ class Homography(Transform):
         return (p * w).reshape(original_shape)
 
 
-class SamePerspectiveHomography(Transform):
+class Affine(Transform):
     """
     Same as Homography, but the perspective vector is null, i.e. v = [0, 0, 0]
     Let X_i be a point cloud built from view v of reconstruction i.
@@ -231,10 +231,10 @@ class SamePerspectiveHomography(Transform):
         self.K = sK/self.scale
     
     @classmethod
-    def identity(cls) -> "SamePerspectiveHomography":
+    def identity(cls) -> "Affine":
         return cls(np.eye(3, M=4, dtype=NP_DTYPE))
 
-    def inv(self) -> "SamePerspectiveHomography":
+    def inv(self) -> "Affine":
         pass
         #[A t| 0 1][A' t'| 0 1] = [AA' At' + t | 0 1]
         # AA' = A'A => A' = A^{-1}. A is 3x3 9DoF.
@@ -246,26 +246,26 @@ class SamePerspectiveHomography(Transform):
         mat = np.zeros((3, 4), dtype=self.mat.dtype)
         mat[:3, :3] = A_prime
         mat[:3, 3] = t_prime
-        return SamePerspectiveHomography(mat)
+        return Affine(mat)
 
-    def __copy__(self) -> "SamePerspectiveHomography":
-        return SamePerspectiveHomography(self.mat.copy()[:3])
+    def __copy__(self) -> "Affine":
+        return Affine(self.mat.copy()[:3])
 
     def __repr__(self) -> str:
-        return f"SamePerspectiveHomography(mat: {self.mat.flatten()})"
+        return f"Affine(mat: {self.mat.flatten()})"
 
     def as_matrix(self) -> np.ndarray:
         return self.mat
 
-    def __matmul__(self, other: "SamePerspectiveHomography") -> "SamePerspectiveHomography":
+    def __matmul__(self, other: "Affine") -> "Affine":
         result_mat = (self.mat @ other.mat)[:3]
-        return SamePerspectiveHomography(result_mat)
+        return Affine(result_mat)
 
     def tangent(self) -> torch.Tensor:
         return torch.Tensor(SL4(self.mat).Log()).to(TORCH_DTYPE)
 
     @classmethod
-    def from_tangent(cls, tangent: torch.Tensor) -> "SamePerspectiveHomography":
+    def from_tangent(cls, tangent: torch.Tensor) -> "Affine":
         sl4_mat = SL4.Exp(tangent.cpu().numpy()).mat
         homography_mat = sl4_mat/sl4_mat[3, 3]
         return cls(homography_mat[:3])
