@@ -4,9 +4,8 @@ from scipy.special import huber
 from scipy.optimize import minimize
 from scipy.optimize import least_squares
 
-from homography.estimate.vggt_long_sim3_utils import (
-    robust_weighted_estimate_sim3
-)
+from .vggt_long_sim3_utils import robust_weighted_estimate_sim3
+from .vggt_slam_solve_h import ransac_projective
 
 
 def estimate_sim3(
@@ -52,7 +51,7 @@ def estimate_scale(
     if weights is None:
         weights = np.ones((N))
     else:
-        weights = np.sqrt(np.asarray(weights).reshape(N, 1))
+        weights = np.sqrt(np.asarray(weights).reshape(N,))
 
     loss = lambda s: huber(1e-3, weights*(tgt_depth - s*scr_depth)).sum()
     scale = minimize(loss, 1.0).x[0]
@@ -87,17 +86,21 @@ def __compute_initial_homography(
         H_initial: 4x4 numpy array, initial homography estimate
     """
     X = __to_homogeneous(X)
-    N = X.shape[0]
-    
+    N = min(200, X.shape[0])
     if N < 5:
         raise ValueError(
             "At least 5 points are required for homographyt estimation"
         )
-        
+
     if weights is None:
+        idx = list(range(N))
         weights = np.ones((N, 1))
     else:
-        weights = np.sqrt(np.asarray(weights).reshape(N, 1))
+        idx = np.argpartition(weights, -N)[-N:]
+        weights = np.sqrt(np.asarray(weights[idx]).reshape(N, 1))
+
+    X = X[idx]
+    Xp = Xp[idx]
 
     u = Xp[:, 0:1]
     v = Xp[:, 1:2]
@@ -133,10 +136,11 @@ def __refine_3D_homography(
     H_initial: npt.ArrayLike,
     X: npt.ArrayLike,
     Xp: npt.ArrayLike,
-    weights: npt.ArrayLike=None
+    weights: npt.ArrayLike=None,
+    lambda_reg: float = 0.0
 ) -> npt.ArrayLike:
     """
-    Refine a 3D homography given initial estimate, 3D points, and weights.
+    Refine a 3D homography given initial estimate, 3D points, weights, and regularization.
 
     Args:
         H_initial: 4x4 numpy array, initial homography
@@ -144,14 +148,19 @@ def __refine_3D_homography(
         Xp: Nx3 numpy array, target points in Euclidean coordinates
         weights: N numpy array (or list), weights for each point pair. 
                  Defaults to 1.0 for all points.
+        lambda_reg: Regularization strength. Higher values force the refined 
+                    homography to stay closer to H_initial. Defaults to 0.0 (no regularization).
 
     Returns:
         H_refined: 4x4 numpy array, refined homography
     """
     
+    H_initial = np.asarray(H_initial)
     H_initial = H_initial / H_initial[3, 3]
     X = __to_homogeneous(X)
     N = X.shape[0]
+    
+    h0 = H_initial.flatten()[:15]
     
     if weights is None:
         weights = np.ones((N, 1))
@@ -164,7 +173,13 @@ def __refine_3D_homography(
         X_h = X_proj[:, :3] / X_proj[:, 3:4] 
         
         weighted_error = weights * (X_h - Xp)
-        return weighted_error.ravel()
+        error_vec = weighted_error.ravel()
+        
+        if lambda_reg > 0:
+            reg_error = np.sqrt(lambda_reg) * (h15 - h0)
+            error_vec = np.concatenate((error_vec, reg_error))
+            
+        return error_vec
     
     def jacobian(h15):
         H = np.append(h15, 1.0).reshape(4, 4)
@@ -189,11 +204,14 @@ def __refine_3D_homography(
         J = J[:, :15]
         
         weights_repeated = np.repeat(weights, 3, axis=0)
+        J_weighted = J * weights_repeated
         
-        return J * weights_repeated
+        if lambda_reg > 0:
+            reg_J = np.sqrt(lambda_reg) * np.eye(15)
+            J_weighted = np.vstack((J_weighted, reg_J))
+            
+        return J_weighted
 
-    h0 = H_initial.flatten()[:15]
-    
     res = least_squares(
         reprojection_error,
         h0,
@@ -205,7 +223,6 @@ def __refine_3D_homography(
     H_refined = np.append(res.x, 1.0).reshape(4, 4)
     
     return H_refined
-
 
 def __compute_initial_affine(
     X: npt.ArrayLike,
@@ -373,3 +390,34 @@ def estimate_affine(
     return __refine_coplanar_affine(
         A_initial, src_points, tgt_points, weights, alpha
     )
+
+
+def estimate_homography_ransac(
+    src_points: npt.ArrayLike,
+    tgt_points: npt.ArrayLike,
+    weights: npt.ArrayLike=None, #FUTURE
+) -> npt.ArrayLike:
+    """
+    Estimate 3D Homography using ransac method of VGGT SLAM 1.0.
+    Inputs:
+        src_points: (N, 3)
+        tgt_points: (N, 3)
+    Returns:
+        H: Homography (4, 4)
+    """
+
+    N = min(100, src_points.shape[0])
+    if weights is None:
+        idx = list(range(N))
+    else:
+        idx = np.argpartition(weights, -N)[-N:]
+    
+    H = ransac_projective(
+        src_points[idx], tgt_points[idx], max_iter=100, sample_size=10
+    )
+    H /= H[3, 3]
+
+    return __refine_3D_homography(
+        H, src_points, tgt_points, weights, lambda_reg=0.1
+    )
+
