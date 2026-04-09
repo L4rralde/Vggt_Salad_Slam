@@ -43,7 +43,7 @@ def estimate_se3(
     return mat
 
 
-def est_scale(
+def estimate_scale(
     scr_depth: npt.ArrayLike,
     tgt_depth: npt.ArrayLike,
     weights: npt.ArrayLike=None
