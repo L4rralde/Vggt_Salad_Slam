@@ -141,5 +141,5 @@ class FitAffine(FitAlign):
 class FitHomography(FitAlign):
     def __init__(self) -> None:
         self._transform: transforms.Homography = None
-        self._estimate_fn: Callable = estimate.estimate_homography
+        self._estimate_fn: Callable = estimate.estimate_homography_ransac
         self._transform_type: Type[transforms.Homography] = transforms.Homography
