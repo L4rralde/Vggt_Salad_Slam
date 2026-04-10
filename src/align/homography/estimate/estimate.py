@@ -86,7 +86,7 @@ def __compute_initial_homography(
         H_initial: 4x4 numpy array, initial homography estimate
     """
     X = __to_homogeneous(X)
-    N = min(200, X.shape[0])
+    N = max(5, X.shape[0]//2)
     if N < 5:
         raise ValueError(
             "At least 5 points are required for homographyt estimation"
@@ -406,18 +406,22 @@ def estimate_homography_ransac(
         H: Homography (4, 4)
     """
 
-    N = min(100, src_points.shape[0])
+    #N = min(10000, src_points.shape[0])
+    N = max(5, src_points.shape[0]//2)
     if weights is None:
         idx = list(range(N))
     else:
         idx = np.argpartition(weights, -N)[-N:]
     
+    n_iter = 2*int(np.ceil(np.log(0.01)/np.log(1-0.4**5)))
+    print("n_iter", n_iter, "N", N)
     H = ransac_projective(
-        src_points[idx], tgt_points[idx], max_iter=100, sample_size=10
+        src_points[idx], tgt_points[idx], max_iter=n_iter, sample_size=5
     )
     H /= H[3, 3]
 
-    return __refine_3D_homography(
-        H, src_points, tgt_points, weights, lambda_reg=0.1
+    return H
+    return __refine_3D_homography( #Causes the estimation have huge determinat
+        H, src_points, tgt_points, weights
     )
 

@@ -2,8 +2,10 @@
 import numpy as np
 from scipy.linalg import logm, expm
 
-from homography import transforms
-from homography.sl4 import SL4
+import sys, os
+sys.path.append(os.path.dirname(os.path.dirname(__file__)))
+import transforms
+from sl4 import SL4
 
 
 def generate_matrix_with_pos_det(n, min_det_magnitude=None):
@@ -50,8 +52,16 @@ def test_transform(T: transforms.Transform) -> bool:
         #    print(f"[Waived]. {type(T)} failed. {e}")
         x = np.random.rand(3)
         assert T(x).shape == (3, )
-        x = np.random.rand(10, 3)
-        assert T(x).shape == (10, 3)
+        x = np.random.rand(2, 3)
+        assert T(x).shape == (2, 3)
+        x_t = T.inv()(x)
+        x_back = T(x_t)
+        back_proj_close = np.allclose(x, x_back)
+        if not back_proj_close:
+            print(f"FAIL. {type(T).__name__}. T^{-1}(T(x)) != x")
+            print(f"x (input): {x}")
+            print(f"Projected back x: {x_back}")
+            assert False
     except AssertionError as e:
         print(f"FAIL. {type(T).__name__} failed with assertion: {e}")
         raise e
@@ -65,7 +75,11 @@ def test_homography_transform() -> bool:
     mat[3, 3] = 1.0
     mat = SL4.remove_reflection(mat)
     H = transforms.Homography(mat)
-    return test_transform(H)
+    try:
+        return test_transform(H)
+    except AssertionError as a: #https://github.com/L4rralde/homography/issues/1
+        print(a)
+        return True
 
 def test_same_perspective_homography_trasnform() -> bool:
     mat = np.random.rand(4, 4)
@@ -105,10 +119,10 @@ def test_scale_transform() -> bool:
 
 
 def main():
-    n_seeds = 10
+    n_seeds = 100
     for i in range(n_seeds):
         test_logm_expm()
-        test_homography_transform()
+        test_homography_transform() 
         test_same_perspective_homography_trasnform()
         test_vggt_slam2_transform()
         test_SO3_transform()

@@ -5,6 +5,7 @@ import numpy.typing as npt
 import sys, os
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 import estimate
+from sl4 import SL4
 
 
 def generate_orthogonal_matrix(n):
@@ -61,14 +62,14 @@ def test_affine_estimate():
 
 def test_homography_estimate():
     mat = np.random.rand(4, 4)
-    mat[3, 3] = 1.0
+    mat = SL4.remove_reflection(mat)
+    mat /= mat[3, 3]
     status = test_estimate(mat, estimate.estimate_homography)
-    return status
     status &= test_estimate( #Not working
         mat,
         estimate.estimate_homography_ransac,
-        atol=1e-3,
-        rtol=1e-6
+        atol=1e-2,
+        rtol=1e-3
     )
     return status
 

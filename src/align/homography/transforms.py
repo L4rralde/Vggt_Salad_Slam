@@ -134,12 +134,12 @@ class Homography(Transform):
     ) -> None:
         assert mat.shape == (4, 4)
         mat = mat/mat[3, 3]
-        if np.linalg.det(mat[:3, :3]) < 1e-6:
-            det = np.linalg.det(mat[:3, :3])
-            print(
-                f"Warning: This homography may include reflection. Reflection could be removed. det = {det}"
-            )
-            mat[:3, :3] *= -1
+        #if np.linalg.det(mat[:3, :3]) < 1e-6:
+        #    det = np.linalg.det(mat[:3, :3])
+        #    print(
+        #        f"Warning: This homography may include reflection. Reflection could be removed. det = {det}"
+        #    )
+        #    mat[:3, :3] *= -1
         self.mat: np.ndarray = mat
         
         self.perspective: np.ndarray = self.mat[3, :3]
@@ -201,7 +201,7 @@ class Homography(Transform):
         p = x @ A.T + t #Shape (n, 3)
         w = x @ v + 1.0 # shape (n,)
         w = np.repeat(np.expand_dims(w, axis=1), 3, axis=1) #shape (n, 3)
-        return (p * w).reshape(original_shape)
+        return (p / w).reshape(original_shape)
 
 
 class Affine(Transform):
