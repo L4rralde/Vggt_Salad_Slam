@@ -171,7 +171,5 @@ def ransac_projective(X1_np, X2_np, threshold=0.01, max_iter=300, sample_size=5)
     # Select best hypothesis
     best_idx = torch.argmax(inlier_counts)
     best_H = H_ests[best_idx].cpu().numpy()
-    
-    print("Num of inliers", inlier_counts[best_idx])
 
     return best_H

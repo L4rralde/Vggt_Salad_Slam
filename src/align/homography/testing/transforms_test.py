@@ -5,7 +5,6 @@ from scipy.linalg import logm, expm
 import sys, os
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 import transforms
-from sl4 import SL4
 
 
 def generate_matrix_with_pos_det(n, min_det_magnitude=None):
@@ -19,14 +18,17 @@ def generate_matrix_with_pos_det(n, min_det_magnitude=None):
     M *= (1/det)**(1/n)
     return M
 
+
 def generate_orthogonal_matrix(n):
     mat = np.random.rand(n, n)
     q, _ = np.linalg.qr(mat)
     return q
 
+
 def test_logm_expm():
     mat = np.random.rand(4, 4)
     assert np.allclose(mat, expm(logm(mat)))
+
 
 def test_transform(T: transforms.Transform) -> bool:
     try:
@@ -37,7 +39,6 @@ def test_transform(T: transforms.Transform) -> bool:
         assert T == T.copy()
         assert isinstance(repr(T), str)
         assert T.as_matrix().shape == (4, 4)
-        #try:
         tangent_match = transforms.all_close(
             T,
             type(T).from_tangent(T.tangent()),
@@ -48,8 +49,6 @@ def test_transform(T: transforms.Transform) -> bool:
             print("Original matrix", T.as_matrix())
             print("Recovered matrix", type(T).from_tangent(T.tangent()).as_matrix())
             assert False
-        #except Exception as e:
-        #    print(f"[Waived]. {type(T)} failed. {e}")
         x = np.random.rand(3)
         assert T(x).shape == (3, )
         x = np.random.rand(2, 3)
@@ -65,43 +64,45 @@ def test_transform(T: transforms.Transform) -> bool:
     except AssertionError as e:
         print(f"FAIL. {type(T).__name__} failed with assertion: {e}")
         raise e
-    #print(f"{type(T).__name__}. PASS.")
     return True
 
 
 def test_homography_transform() -> bool:
-    mat = np.random.rand(4, 4)
-    mat[:3, :3] = generate_matrix_with_pos_det(3, 1e-3)
-    mat[3, 3] = 1.0
-    mat = SL4.remove_reflection(mat)
+    while True:
+        mat = generate_matrix_with_pos_det(4, 1e-3)
+        mat /= mat[3, 3]
+        if np.linalg.det(mat[:3, :3]) < 1e-6 or np.linalg.det(mat) < 1e-6:
+            continue
+        break
     H = transforms.Homography(mat)
-    try:
-        return test_transform(H)
-    except AssertionError as a: #https://github.com/L4rralde/homography/issues/1
-        print(a)
-        return True
+    return test_transform(H)
 
-def test_same_perspective_homography_trasnform() -> bool:
+
+def test_affine_trasnform() -> bool:
     mat = np.random.rand(4, 4)
     mat[:3, :3] = generate_matrix_with_pos_det(3, 1e-3)
     T = transforms.Affine(mat[:3])
     return test_transform(T)
+
 
 def test_vggt_slam2_transform() -> bool:
     mat = np.triu(np.random.rand(3,3))
     T = transforms.VggtSlam2Transform(mat)
     return test_transform(T)
 
+
 def test_SO3_transform() -> bool:
     mat = generate_orthogonal_matrix(3)
     T = transforms.SO3(mat)
     return test_transform(T)
+
 
 def test_SE3_transform() -> bool:
     rot = generate_orthogonal_matrix(3)
     t = np.random.rand(3)
     T = transforms.SE3(rot, t)
     return test_transform(T)
+
 
 def test_Sim3_transform() -> bool:
     s = 10 * np.exp(np.random.rand(1)).item()
@@ -110,6 +111,7 @@ def test_Sim3_transform() -> bool:
     t = np.random.rand(3)
     T = transforms.Sim3(s, rot, t)
     return test_transform(T)
+
 
 def test_scale_transform() -> bool:
     s = 10 * np.exp(np.random.rand(1)).item()
@@ -123,13 +125,14 @@ def main():
     for i in range(n_seeds):
         test_logm_expm()
         test_homography_transform() 
-        test_same_perspective_homography_trasnform()
+        test_affine_trasnform()
         test_vggt_slam2_transform()
         test_SO3_transform()
         test_SE3_transform()
         test_Sim3_transform()
         test_scale_transform()
         print(f"seed {i+1}. PASS")
+
 
 if __name__ == '__main__':
     main()

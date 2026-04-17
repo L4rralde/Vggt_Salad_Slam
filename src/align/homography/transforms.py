@@ -16,7 +16,7 @@ import torch
 from scipy.spatial.transform import Rotation as scipy_R
 import pypose as pp
 
-from .sl4 import SL4
+from .sl4 import SL4, SL4Affine
 
 
 NP_DTYPE = np.float32
@@ -72,16 +72,21 @@ class Transform(ABC):
         )
     
     @abstractclassmethod
-    def tangent(self) -> object:
+    def tangent(self) -> torch.Tensor:
         raise NotImplementedError()
 
     @abstractclassmethod
-    def from_tangent(tangent: object) -> "Transform":
+    def from_tangent(tangent: torch.Tensor) -> "Transform":
         raise NotImplementedError()
 
     @abstractclassmethod
     def __call__(self, *args: Any) -> Any:
         #Transforms points
+        raise NotImplementedError()
+
+    @property
+    @abstractclassmethod
+    def ndof(self) -> int:
         raise NotImplementedError()
 
 
@@ -169,7 +174,7 @@ class Homography(Transform):
         return f"Homography(mat: {self.mat.flatten()})"
 
     def as_matrix(self) -> np.ndarray:
-        return self.mat
+        return self.mat.copy()
     
     def __matmul__(self, other: "Homography") -> "Homography":
         return Homography(self.mat @ other.mat)
@@ -178,13 +183,14 @@ class Homography(Transform):
         return np.array_equal(self.mat, other.mat)
 
     def tangent(self) -> torch.Tensor:
-        return torch.Tensor(SL4(self.mat).Log()).to(TORCH_DTYPE)
+        mat = torch.from_numpy(self.mat)
+        return torch.Tensor(SL4(mat).Log()).to(TORCH_DTYPE)
 
     @classmethod
     def from_tangent(cls, tangent: torch.Tensor) -> "Affine":
-        sl4_mat = SL4.Exp(tangent.cpu().numpy()).mat
+        sl4_mat = SL4.Exp(tangent).mat
         homography_mat = sl4_mat/sl4_mat[3, 3]
-        return cls(homography_mat)
+        return cls(homography_mat.cpu().numpy())
 
     def __call__(self, x: np.ndarray) -> np.ndarray:
         original_shape = x.shape
@@ -203,6 +209,9 @@ class Homography(Transform):
         w = np.repeat(np.expand_dims(w, axis=1), 3, axis=1) #shape (n, 3)
         return (p / w).reshape(original_shape)
 
+    @property
+    def ndof(self) -> int:
+        return 15
 
 class Affine(Transform):
     """
@@ -270,19 +279,20 @@ class Affine(Transform):
         return f"Affine(mat: {self.mat.flatten()})"
 
     def as_matrix(self) -> np.ndarray:
-        return self.mat
+        return self.mat.copy()
 
     def __matmul__(self, other: "Affine") -> "Affine":
         result_mat = (self.mat @ other.mat)[:3]
         return Affine(result_mat)
 
     def tangent(self) -> torch.Tensor:
-        return torch.Tensor(SL4(self.mat).Log()).to(TORCH_DTYPE)
+        mat = torch.from_numpy(self.mat)
+        return torch.Tensor(SL4Affine(mat).Log()).to(TORCH_DTYPE)
 
     @classmethod
     def from_tangent(cls, tangent: torch.Tensor) -> "Affine":
-        sl4_mat = SL4.Exp(tangent.cpu().numpy()).mat
-        homography_mat = sl4_mat/sl4_mat[3, 3]
+        sl4_mat = SL4Affine.Exp(tangent).mat
+        homography_mat = (sl4_mat/sl4_mat[3, 3]).cpu().numpy()
         return cls(homography_mat[:3])
 
     def __call__(self, x: np.ndarray) -> np.ndarray:
@@ -296,6 +306,10 @@ class Affine(Transform):
         assert d == 3
         #A is 3x3. x is nx3. A x^T is 3 xn. Hence (A x^T)^T = x A^t
         return (x @ A.T + t).reshape(original_shape)
+
+    @property
+    def ndof(self) -> int:
+        return 12
 
 
 class VggtSlam2Transform(Transform):
@@ -359,12 +373,13 @@ class VggtSlam2Transform(Transform):
         return VggtSlam2Transform(self.sK_mat @ other.sK_mat)
 
     def tangent(self) -> torch.Tensor:
-        return torch.Tensor(SL4(self.as_matrix()).Log()).to(TORCH_DTYPE)
+        mat = torch.from_numpy(self.as_matrix())
+        return torch.Tensor(SL4(mat).Log()).to(TORCH_DTYPE)
 
     @classmethod
     def from_tangent(cls, tangent: torch.Tensor) -> "VggtSlam2Transform":
-        sl4_mat = SL4.Exp(tangent.cpu().numpy()).mat
-        homography_mat = sl4_mat/sl4_mat[3, 3]
+        sl4_mat = SL4.Exp(tangent).mat
+        homography_mat = (sl4_mat/sl4_mat[3, 3]).cpu().numpy()
         assert np.allclose(homography_mat[:3, 3], np.zeros(3))
         assert np.allclose(homography_mat[3, :3], np.zeros(3))
         return cls(homography_mat[:3, :3])
@@ -377,6 +392,10 @@ class VggtSlam2Transform(Transform):
         n, d = x.shape
         assert d == 3
         return (x @ self.sK_mat.T).reshape(original_shape)
+
+    @property
+    def ndof(self) -> int:
+        return 6
 
 
 class SO3(Transform):
@@ -460,6 +479,9 @@ class SO3(Transform):
             result = np.squeeze(x, axis=0)
         return result
 
+    @property
+    def ndof(self) -> int:
+        return 3
 
 class SE3(SO3):
     """
@@ -531,6 +553,10 @@ class SE3(SO3):
     def __call__(self, x: np.ndarray) -> np.ndarray:
         return super().__call__(x) + self.translation
 
+    @property
+    def ndof(self) -> int:
+        return 6
+
 
 class Sim3(SE3):
     """
@@ -584,7 +610,7 @@ class Sim3(SE3):
     def aspypose(self) -> pp.Sim3:
         data = np.concatenate([
             self.translation,
-            scipy_R.from_matrix(self.R).as_quat(),
+            scipy_R.from_matrix(self.rotation).as_quat(),
             np.array(self.scale).reshape((1,))
         ])
         return pp.Sim3(data)
@@ -625,8 +651,19 @@ class Sim3(SE3):
         ])
         return pp.Sim3(data).Log()
 
+    @classmethod
+    def from_tangent(cls, tangent: torch.Tensor) -> "SE3":
+        if not type(tangent) == pp.sim3:
+            tangent = pp.sim3(tangent)
+        pp_transform = tangent.Exp()
+        return cls.from_pypose(pp_transform)
+
     def __call__(self, x: np.ndarray) -> np.ndarray:
         return (self.scale * SO3.__call__(self, x)) + self.translation
+
+    @property
+    def ndof(self) -> int:
+        return 7
 
 # Assumption #1. Depth maps are robust, so we can estimate s directly using depthmaps.
 #Hence, we treat s as constant in estimation methods.
@@ -685,6 +722,10 @@ class ScaleTransform(Transform):
 
     def __call__(self, x: np.ndarray) -> np.ndarray:
         return x * self.scale
+
+    @property
+    def ndof(self) -> int:
+        return 1
 
 
 

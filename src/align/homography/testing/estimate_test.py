@@ -1,6 +1,7 @@
 from typing import Callable
 import numpy as np
 import numpy.typing as npt
+import torch
 
 import sys, os
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
@@ -62,7 +63,7 @@ def test_affine_estimate():
 
 def test_homography_estimate():
     mat = np.random.rand(4, 4)
-    mat = SL4.remove_reflection(mat)
+    mat = SL4.remove_reflection(torch.from_numpy(mat)).numpy()
     mat /= mat[3, 3]
     status = test_estimate(mat, estimate.estimate_homography)
     status &= test_estimate( #Not working

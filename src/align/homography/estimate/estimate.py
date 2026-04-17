@@ -387,6 +387,7 @@ def estimate_affine(
             src_points, tgt_points, weights
         )
     
+    return A_initial
     return __refine_coplanar_affine(
         A_initial, src_points, tgt_points, weights, alpha
     )
@@ -413,15 +414,13 @@ def estimate_homography_ransac(
     else:
         idx = np.argpartition(weights, -N)[-N:]
     
-    n_iter = 2*int(np.ceil(np.log(0.01)/np.log(1-0.4**5)))
-    print("n_iter", n_iter, "N", N)
+    n_iter = 2*int(np.ceil(np.log(0.01)/np.log(1-0.5**5)))
     H = ransac_projective(
         src_points[idx], tgt_points[idx], max_iter=n_iter, sample_size=5
     )
     H /= H[3, 3]
 
-    return H
-    return __refine_3D_homography( #Causes the estimation have huge determinat
+    return __refine_3D_homography(
         H, src_points, tgt_points, weights
     )
 
