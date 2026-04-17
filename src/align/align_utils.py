@@ -69,7 +69,10 @@ def to_homogeneous(matrices):
     Returns:
         np.ndarray: Output array of shape (n, 4, 4)
     """
-    n = matrices.shape[0]
+    n, r, c = matrices.shape
+    if r == 4:
+        assert np.abs(matrices[:, 3, :3]).sum() < 1e-6
+        return matrices
     homogeneous = np.zeros((n, 4, 4), dtype=matrices.dtype)
     homogeneous[:, :3, :4] = matrices
     homogeneous[:, 3, 3] = 1.0
