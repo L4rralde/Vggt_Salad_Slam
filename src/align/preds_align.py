@@ -65,6 +65,11 @@ class FitAlign(ABC):
         self.fit(src, tgt, **kwargs)
         return self.transform(src)
 
+    def __matmul__(self, other: "FitAlign") -> "FitAlign":
+        new_aligner = self.__class__()
+        new_aligner._transform = self._transform @ other._transform
+        return new_aligner
+
 #FUTURE
 #class FitSE3(FitAlign)
         
@@ -85,14 +90,13 @@ class FitAffine(FitAlign):
         self, src: Dict[str, Any], tgt: Dict[str, Any], **kwargs
     ) -> "FitAffine":
         src, tgt = get_shared_preds(src,  tgt)
+        assert (get_ids(src) == get_ids(tgt))
         src_mask = get_conf_mask(src)
         tgt_mask = get_conf_mask(tgt)
         mask = src_mask & tgt_mask
 
         src_conf = src['conf'][mask]
         tgt_conf = tgt['conf'][mask]
-
-        assert (get_ids(src) == get_ids(tgt))
         
         weights = np.min(
             np.vstack((src_conf, tgt_conf)),
@@ -107,19 +111,15 @@ class FitAffine(FitAlign):
 
         shared_idx = np.random.randint(len(src['depth']))
 
-        tgt_extrinsic = tgt['extrinsic'][shared_idx]
-        tgt_R = tgt_extrinsic[:3, :3]
-        tgt_t = tgt_extrinsic[:3, 3]
+        tgt_extrinsic = to_homogeneous(tgt['extrinsic'][shared_idx][None, :])
+        tgt_extrinsic = tgt_extrinsic[0]
         tgt_intrinsic = tgt['intrinsic'][shared_idx]
         src_intrinsic = src['intrinsic'][shared_idx]
         src_extrinsic = to_homogeneous(src['extrinsic'][shared_idx][None, :])
+        src_extrinsic = src_extrinsic[0]
         A_initial = np.eye(4)
-        A_initial[:3, :3] = s * (
-            tgt_R.T @ np.linalg.inv(tgt_intrinsic) @ src_intrinsic
-        )
-        A_initial[:3, 3] = -1.0 * tgt_R.T @ tgt_t
-
-        A_initial @= src_extrinsic
+        A_initial[:3, :3] = s * np.linalg.inv(tgt_intrinsic) @ src_intrinsic
+        A_initial = tgt_extrinsic @ A_initial @ np.linalg.inv(src_extrinsic)
 
         src_points = get_pointmap(src)[mask]
         tgt_points = get_pointmap(tgt)[mask]
