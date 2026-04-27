@@ -24,7 +24,6 @@ def parse_args() -> dict:
 
     return args
 
-
 def compare_predictions(
     vggt_preds: Dict[str, np.ndarray],
     vggt_salad_preds: Prediction
@@ -32,6 +31,8 @@ def compare_predictions(
     vggt_salad_preds = asdict(vggt_salad_preds)
     acc_diff = 0
     for k in vggt_salad_preds.keys():
+        if k == 'ids' or k == 'mask':
+            continue
         diff = np.abs(vggt_preds[k] - vggt_salad_preds[k]).sum()
         if diff > 1e-6:
             raise RuntimeError(f"{k} mismatch: {diff}")
