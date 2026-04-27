@@ -84,7 +84,6 @@ def main() -> None:
     args = parse_args()
     dataset = ImgDirDataset(args.img_dir)
 
-    print("loading vggt")
     if not torch.cuda.is_available():
         raise RuntimeError("Only works with cuda")
     configs = ['small', 'base', 'large', 'giant']
