@@ -1,9 +1,13 @@
 .vscode
 __pycache__
-*Untitled.ipynb
+*Untitled*.ipynb
 .ipynb_checkpoints/
 *.pkl
 build
 install
 log
 *.venv
+venvs
+output
+preds
+*.jpg
