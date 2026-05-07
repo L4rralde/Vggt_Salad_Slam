@@ -265,72 +265,6 @@ def __compute_initial_affine(
     return A_initial
 
 
-def __refine_coplanar_affine(
-    A_initial: npt.ArrayLike,
-    X: npt.ArrayLike,
-    Xp: npt.ArrayLike,
-    weights: npt.ArrayLike=None,
-    alpha: float=1.0
-) -> npt.ArrayLike:
-    """
-    Refine a 12 DoF affine matrix for coplanar points using Tikhonov regularization.
-    
-    Args:
-        A_initial: 4x4 numpy array, initial affine matrix from extra info
-        X: Nx3 numpy array, source points in Euclidean coordinates
-        Xp: Nx3 numpy array, target points in Euclidean coordinates
-        weights: N numpy array, point confidences
-        alpha: Float, regularization weight. Higher means stricter adherence to A_initial.
-    """
-    X = __to_homogeneous(X)
-    N = X.shape[0]
-    
-    if weights is None:
-        weights = np.ones((N, 1))
-    else:
-        weights = np.asarray(weights).reshape(N, 1)
-
-    a0 = A_initial[:3, :4].flatten()
-    
-    sqrt_alpha = np.sqrt(alpha)
-
-    def reprojection_error(a12):
-        M = a12.reshape(3, 4)
-        X_proj = X @ M.T
-        
-        point_error = (weights * (X_proj - Xp)).ravel()
-        
-        reg_error = sqrt_alpha * (a12 - a0)
-        
-        return np.concatenate([point_error, reg_error])
-    
-    def jacobian(a12):
-        J_pts = np.zeros((3 * N, 12))
-        J_pts[0::3, 0:4] = X
-        J_pts[1::3, 4:8] = X
-        J_pts[2::3, 8:12] = X
-        
-        weights_repeated = np.repeat(weights, 3, axis=0)
-        J_pts *= weights_repeated
-
-        J_reg = sqrt_alpha * np.eye(12)
-        
-        return np.vstack([J_pts, J_reg])
-
-    res = least_squares(
-        reprojection_error,
-        a0,
-        jac=jacobian,
-        method='lm',
-        verbose=1
-    )
-    
-    A_refined = np.eye(4)
-    A_refined[:3, :4] = res.x.reshape(3, 4)
-    
-    return A_refined
-
-
 def estimate_homography(
     src_points: npt.ArrayLike,
     tgt_points: npt.ArrayLike,
@@ -365,7 +299,6 @@ def estimate_affine(
     tgt_points: npt.ArrayLike,
     weights: npt.ArrayLike=None,
     A_initial: npt.ArrayLike=None,
-    alpha: float=1.0
 ) -> npt.ArrayLike:
     """
     Compute Affine transformation between two point clouds.
@@ -388,9 +321,6 @@ def estimate_affine(
         )
     
     return A_initial
-    return __refine_coplanar_affine(
-        A_initial, src_points, tgt_points, weights, alpha
-    )
 
 
 def estimate_homography_ransac(
