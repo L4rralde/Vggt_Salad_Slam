@@ -121,19 +121,7 @@ class FitAffine(FitAlign):
         A_initial[:3, :3] = s * np.linalg.inv(tgt_intrinsic) @ src_intrinsic
         A_initial = tgt_extrinsic @ A_initial @ np.linalg.inv(src_extrinsic)
 
-        src_points = get_pointmap(src)[mask]
-        tgt_points = get_pointmap(tgt)[mask]
-
-        alpha = kwargs.get('alpha', 1.0)
-        self._transform = transforms.Affine.from_matrix(
-            estimate.estimate_affine(
-                src_points,
-                tgt_points,
-                weights,
-                A_initial,
-                alpha
-            )
-        )
+        self._transform = transforms.Affine.from_matrix(A_initial)
         
         return self
 
