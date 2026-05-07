@@ -91,23 +91,45 @@ class FitAffine(FitAlign):
     ) -> "FitAffine":
         src, tgt = get_shared_preds(src,  tgt)
         assert (get_ids(src) == get_ids(tgt))
+
         src_mask = get_conf_mask(src)
         tgt_mask = get_conf_mask(tgt)
-        mask = src_mask & tgt_mask
+        #In the case the shared image is of different shape in different groups
+        # we cannot make a pixel-to-pixel comparison.
+        #This may happen if cropping, padding or resizing is performed in a 
+        #group in order to make all (tensor) images of the same shape
+        if src_mask.shape == tgt_mask.shape:
+            mask = src_mask & tgt_mask
 
-        src_conf = src['conf'][mask]
-        tgt_conf = tgt['conf'][mask]
-        
-        weights = np.min(
-            np.vstack((src_conf, tgt_conf)),
-            axis=0
-        )
+            src_conf = src['conf'][mask]
+            tgt_conf = tgt['conf'][mask]
+            
+            weights = np.min(
+                np.vstack((src_conf, tgt_conf)),
+                axis=0
+            )
 
-        s = estimate.estimate_scale(
-            src['depth'][mask],
-            tgt['depth'][mask],
-            weights
-        )
+            s = estimate.estimate_scale(
+                src['depth'][mask],
+                tgt['depth'][mask],
+                weights
+            )
+        elif len(get_ids(src)) >= 2:
+            #We can use the total length of the trajectory to estimate s
+            src_t = src['extrinsic'][:, :3, 3]
+            src_distance = 0
+            for t, next_t in zip(src_t[:-1], src_t[1:]):
+                src_distance += np.linalg.norm(next_t - t)
+
+            tgt_t = tgt['extrinsic'][:, :3, 3]
+            tgt_distance = 0
+            for t, next_t in zip(tgt_t[:-1], tgt[1:]):
+                tgt_distance += np.linalg.norm(next_t - t)
+            
+            s = tgt_distance/src_distance
+        else:
+            raise RuntimeError("Not enough information to compute scale factor")
+            scale = 1.0 #We could set the scale factor to 1 with caveats.
 
         shared_idx = np.random.randint(len(src['depth']))
 
