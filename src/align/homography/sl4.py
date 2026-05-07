@@ -132,6 +132,8 @@ class SL4Affine(SL4):
             dtype=self.mat.dtype,
             device=self.mat.device
         )
+        mat_inv[:3, :3] = A_inv
+        mat_inv[:3, 3] = t_inv
         return SL4Affine(mat_inv)
 
     @classmethod
