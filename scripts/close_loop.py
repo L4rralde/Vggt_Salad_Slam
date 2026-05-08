@@ -1,8 +1,11 @@
 import sys
 import os
+from argparse import ArgumentParser
 
 import numpy as np
 import open3d as o3d
+from pathlib import Path
+import re
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 from src.align import preds_align
@@ -11,6 +14,14 @@ from src.align.homography import transforms
 from src.align.homography.graph.core import Vertex, Optimizer
 from src.align.homography.graph.edges import EdgeSL4Affine
 from src.align.homography.graph.algorithms import GaussNewton
+
+
+def parse_agrs():
+    parser = ArgumentParser()
+    parser.add_argument('root_dir')
+
+    args = parser.parse_args()
+    return args
 
 
 def preds_to_pcd(preds, pointmap):
@@ -26,13 +37,29 @@ def preds_to_pcd(preds, pointmap):
     return point_cloud
 
 
-def main():
-    root = "calderon_output"
+def load_predictions(root_path):
+    def natural_sort_key(path):
+        return [int(text) if text.isdigit() else text.lower() 
+                for text in re.split('([0-9]+)', str(path))]
+    
+    root = Path(root_path)
+    files = list(root.glob("*/all.npz"))
+    files.sort(key=natural_sort_key)
 
-    preds = [
-        dict(np.load(f"{root}/{i}/all.npz"))
-        for i in range(1, 9)
-    ]
+    print("Found follwong list of prediction files:")
+    for f in files:
+        print(str(f))
+
+    preds = [dict(np.load(f)) for f in files]
+    
+    return preds
+
+
+def main():
+    args = parse_agrs()
+    root = args.root_dir
+
+    preds = load_predictions(root)
 
     for p in preds:
         p.pop('model', None)
