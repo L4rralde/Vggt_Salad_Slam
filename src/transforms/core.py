@@ -1,0 +1,155 @@
+from abc import ABC, abstractmethod
+from typing import Any
+
+import numpy as np
+
+from src.models.dtypes import Prediction
+
+
+def to_homogeneous(matrix: np.ndarray) -> np.ndarray:
+    if matrix.shape == (3, 4):
+        homo_matrix = np.eye(4, dtype=matrix.dtype)
+        homo_matrix[:3] = matrix
+    elif matrix.shape == (4, 4):
+        homo_matrix = matrix.copy()
+    else:
+        raise ValueError(f"Expected 3x4 or 4x4 matrix, got {matrix.shape}")
+    
+    if abs(homo_matrix[3,3]) < 1e-12:
+        raise ValueError("Homogeneous matrix has zero in (3,3) entry, cannot normalize")
+    homo_matrix /= homo_matrix[3,3]
+    return homo_matrix
+
+
+def matrix_transforms_matmul(left: MatrixTransform, right: MatrixTransform) -> MatrixTransform:
+    if not isinstance(left, MatrixTransform):
+        raise ValueError(f"input not supported: {left}")
+    if not isinstance(right, MatrixTransform):
+        raise ValueError(f"input not supported: {right}")
+    
+    if isinstance(left, Homography) or isinstance(right, Homography):
+        cast_type = Homography
+    elif isinstance(left, Affine) or isinstance(right, Affine):
+        cast_type = Affine
+    elif isinstance(left, Sim3) or isinstance(right, Sim3):
+        cast_type = Affine
+    elif isinstance(left, SE3) or isinstance(right, SE3):
+        cast_type = SE3
+    else:
+        raise ValueError("Types not supported yet. Future")
+
+    return cast_type(left._matrix @ right._matrix)
+
+
+class MatrixTransform(ABC):
+    def __init__(self, matrix: np.ndarray|None=None) -> None:
+        self._matrix = None
+
+    @abstractmethod
+    def transform(self, pred: Prediction|np.ndarray) -> Prediction:
+        raise NotImplementedError
+
+    @abstractmethod
+    def inv(self) -> "MatrixTransform":
+        raise NotImplementedError()
+
+    def copy(self) -> "MatrixTransform":
+        return self.__class__(self._matrix.copy())
+
+    def __matmul__(self, other: MatrixTransform) -> "MatrixTransform":
+        return matrix_transforms_matmul(self, other)
+
+
+class SE3(MatrixTransform):
+    def __init__(self, matrix: np.ndarray|None=None) -> None:
+        if matrix is None:
+            self._matrix = np.eye(4)
+            return
+        matrix = to_homogeneous(matrix)
+        if not np.allclose(matrix[3, :3], np.asarray([0,0,0])):
+            raise ValueError(f"Invalid SE(3) matrix: {matrix}")
+        if not abs(np.linalg.det(matrix[:3, :3]) - 1.0) < 1e-6:
+            raise ValueError(f"Invalid SE(3) matrix. Rotation matrix is orthogonal): {matrix}")
+        self._matrix = np.eye(4, dtype=matrix.dtype)
+        self._matrix[:3] = matrix[:3]
+    
+    def inv(self) -> SE3:
+        rot_inv = np.transpose(self._matrix[:3, :3])
+        t_inv = - rot_inv @ self._matrix[:3, 3]
+        new_mat = np.eye(4, dtype=self._matrix.dtype)
+        new_mat[:3, :3] = rot_inv
+        new_mat[:3, 3] = t_inv
+        return self.__class__(new_mat)
+
+
+
+class Sim3(MatrixTransform):
+    def __init__(self, matrix: np.ndarray|None=None) -> None:
+        if matrix is None:
+            self._matrix = np.eye(4)
+            return
+        matrix = to_homogeneous(matrix)
+        if not np.allclose(matrix[3, :3], np.asarray([0,0,0])):
+            raise ValueError(f"Invalid Sim(3) matrix: {matrix}")
+        if not np.linalg.det(matrix[:3, :3]) > 1e-6:
+            raise ValueError(f"Invalid Sim(3) matrix. scale-rotation matrix with negative determinant: {matrix}")
+        
+        self._matrix = np.eye(4, dtype=matrix.dtype)
+        self._matrix[:3] = matrix[:3]
+
+    def inv(self) -> "Sim3":
+        rot_scale = self._matrix[:3, :3]
+        scale = np.linalg.det(rot_scale)**(1/3)
+        rot = rot_scale/scale
+        t = self._matrix[:3, 3]
+
+        inv_rot_scale = np.transpose(rot)/scale
+        inv_t = - inv_rot_scale @ t
+        inv_mat = np.eye(4, dtype=self._matrix.dtype)
+        inv_mat[:3, :3] = inv_rot_scale
+        inv_mat[:3, 3] = inv_t
+
+        return self.__class__(inv_mat)
+    
+
+class Affine(MatrixTransform):
+    def __init__(self, matrix: np.ndarray | None=None) -> None:
+        if matrix is None:
+            self._matrix = np.eye(4)
+            return
+
+        matrix = to_homogeneous(matrix)
+        if not np.allclose(matrix[3, :3], np.asarray([0,0,0])):
+            raise ValueError(f"Invalid Affine matrix: {matrix}")
+        if not np.linalg.det(matrix[:3, :3]) > 1e-6:
+            raise ValueError(f"Invalid Affine matrix. Matrix includes reflection: {matrix}")
+        
+        self._matrix = np.eye(4, dtype=matrix.dtype)
+        self._matrix[:3] = matrix[:3]
+
+    def inv(self) -> "Affine":
+        A = self._matrix[:3, :3]
+        t = self._matrix[:3, 3]
+
+        inv_mat = np.eye(4, dtype=self._matrix.dtype)
+        inv_mat[:3, :3] = np.linalg.inv(A)
+        inv_mat[:3, 3] = - inv_mat[:3, :3] @ t
+
+        return self.__class__(inv_mat)
+    
+
+class Homography(MatrixTransform):
+    def __init__(self, matrix: Any | None=None) -> None:
+        if matrix is None:
+            self._matrix = np.eye(4)
+            return
+    
+        matrix = to_homogeneous(matrix)
+        if not np.linalg.det(matrix) > 1e-6:
+            raise ValueError(f"Invalid homography matrix. Include reflection: {matrix}")
+    
+        self._matrix = matrix
+    
+    def inv(self) -> "Homography":
+        return self.__class__(np.linalg.inv(self._matrix))
+
