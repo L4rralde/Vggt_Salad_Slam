@@ -125,3 +125,23 @@ def get_pointmap(preds: Prediction) -> npt.ArrayLike:
         preds.extrinsic
     )
     return pointmap
+
+
+def to_pointcloud(
+    preds: Prediction,
+    lower_p: float=40,
+    min_conf: float=1.02,
+    upper_p: float=80
+):
+    import open3d as o3d
+
+    mask = get_conf_mask(preds, lower_p, min_conf, upper_p)
+
+    points = get_pointmap(preds)[mask].reshape(-1, 3)
+    colors = preds.images[mask].reshape(-1, 3)
+
+    point_cloud = o3d.geometry.PointCloud()
+    point_cloud.points = o3d.utility.Vector3dVector(points)
+    point_cloud.colors = o3d.utility.Vector3dVector(colors)
+
+    return point_cloud
