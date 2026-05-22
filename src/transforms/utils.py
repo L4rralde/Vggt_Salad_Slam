@@ -37,7 +37,7 @@ def get_conf_mask(
     upper = np.percentile(conf, upper_p)
     conf_thresh = min(max(min_conf, lower), upper)
 
-    if not 'mask' in preds.keys():
+    if preds.mask is None: 
         return conf > conf_thresh
 
     return preds.mask & (conf > conf_thresh)
@@ -96,31 +96,35 @@ def depth_to_pointmap(
     K = intrinsic
     K_inv = np.linalg.inv(K)
 
-    H, W = depth.shape[:2]
+    n, H, W = depth.shape[:3]
 
-    us, vs = np.meshgrid(np.arange(W), np.arange(H))
-    ones = np.ones_like(us)
+    all_point_maps = []
+    for view_depth, view_extr, view_k_inv in zip(depth, ext_w2c, K_inv):
+        us, vs = np.meshgrid(np.arange(W), np.arange(H))
+        ones = np.ones_like(us)
 
-    pix = np.stack([us, vs, ones], axis=-1).reshape(-1, 3) # (H*W, 3)
-    scaled_depth = scale * depth #Complete copy
-    d_flat = scaled_depth.reshape(-1)
+        pix = np.stack([us, vs, ones], axis=-1).reshape(-1, 3) # (H*W, 3)
+        scaled_depth = scale * view_depth #Complete copy
+        d_flat = scaled_depth.reshape(-1)
 
-    rays = K_inv @ pix.T
+        rays = view_k_inv @ pix.T
 
-    Xc = rays * d_flat[None, :]
-    Xc_h = np.vstack([Xc, np.ones((1, Xc.shape[1]))]) #Homogeneus vector of each ray
-    c2w = np.linalg.inv(ext_w2c)
-    Xw = (c2w @ Xc_h)[:3].T.astype(np.float32)  # (M,3)
-    Xw = Xw.reshape(H, W, 3)
+        Xc = rays * d_flat[None, :]
+        Xc_h = np.vstack([Xc, np.ones((1, Xc.shape[1]))]) #Homogeneus vector of each ray
+        c2w = np.linalg.inv(view_extr)
+        Xw = (c2w @ Xc_h)[:3].T.astype(np.float32)  # (M,3)
+        Xw = Xw.reshape(H, W, 3)
 
-    return Xw
+        all_point_maps.append(Xw)
+    
+    return np.stack(all_point_maps, axis=0)
 
 
 def get_pointmap(preds: Prediction) -> npt.ArrayLike:
     if preds.pointmap is not None:
         return preds.pointmap
     pointmap = depth_to_pointmap(
-        preds.pointmap,
+        preds.depth,
         preds.intrinsic,
         preds.extrinsic
     )
@@ -138,7 +142,13 @@ def to_pointcloud(
     mask = get_conf_mask(preds, lower_p, min_conf, upper_p)
 
     points = get_pointmap(preds)[mask].reshape(-1, 3)
+
+    if mask.shape != preds.images.shape[:3] and preds.images.shape[1] == 3:
+        preds.images = preds.images.transpose(0, 2, 3, 1)
     colors = preds.images[mask].reshape(-1, 3)
+
+    if np.max(colors) > 1:
+        colors = colors/255.0
 
     point_cloud = o3d.geometry.PointCloud()
     point_cloud.points = o3d.utility.Vector3dVector(points)
