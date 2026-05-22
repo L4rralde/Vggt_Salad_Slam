@@ -21,6 +21,7 @@ class Prediction:
     images: np.ndarray
     ids: Optional[List[int]] = None
     mask: Optional[np.ndarray] = None #For mapanything
+    pointmap: Optional[np.ndarray] = None
 
     @classmethod
     def from_da3(cls, preds: Dict[str, np.ndarray]):
