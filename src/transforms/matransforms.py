@@ -6,7 +6,7 @@ import numpy as np
 from src.models.dtypes import Prediction
 
 
-def to_homogeneous(matrix: np.ndarray) -> np.ndarray:
+def canonical_homogeneous(matrix: np.ndarray) -> np.ndarray:
     if matrix.shape == (3, 4):
         homo_matrix = np.eye(4, dtype=matrix.dtype)
         homo_matrix[:3] = matrix
@@ -65,7 +65,7 @@ class SE3(MatrixTransform):
         if matrix is None:
             self._matrix = np.eye(4)
             return
-        matrix = to_homogeneous(matrix)
+        matrix = canonical_homogeneous(matrix)
         if not np.allclose(matrix[3, :3], np.asarray([0,0,0])):
             raise ValueError(f"Invalid SE(3) matrix: {matrix}")
         if not abs(np.linalg.det(matrix[:3, :3]) - 1.0) < 1e-6:
@@ -88,7 +88,7 @@ class Sim3(MatrixTransform):
         if matrix is None:
             self._matrix = np.eye(4)
             return
-        matrix = to_homogeneous(matrix)
+        matrix = canonical_homogeneous(matrix)
         if not np.allclose(matrix[3, :3], np.asarray([0,0,0])):
             raise ValueError(f"Invalid Sim(3) matrix: {matrix}")
         if not np.linalg.det(matrix[:3, :3]) > 1e-6:
@@ -118,7 +118,7 @@ class Affine(MatrixTransform):
             self._matrix = np.eye(4)
             return
 
-        matrix = to_homogeneous(matrix)
+        matrix = canonical_homogeneous(matrix)
         if not np.allclose(matrix[3, :3], np.asarray([0,0,0])):
             raise ValueError(f"Invalid Affine matrix: {matrix}")
         if not np.linalg.det(matrix[:3, :3]) > 1e-6:
@@ -144,7 +144,7 @@ class Homography(MatrixTransform):
             self._matrix = np.eye(4)
             return
     
-        matrix = to_homogeneous(matrix)
+        matrix = canonical_homogeneous(matrix)
         if not np.linalg.det(matrix) > 1e-6:
             raise ValueError(f"Invalid homography matrix. Include reflection: {matrix}")
     
