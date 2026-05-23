@@ -47,8 +47,8 @@ def get_shared_preds(
     preds_a: Prediction,
     preds_b: Prediction
 ) -> Tuple[Prediction, Prediction]:
-    a_ids = preds_a.ids
-    b_ids = preds_b.ids
+    a_ids = list(preds_a.ids)
+    b_ids = list(preds_b.ids)
     shared_ids = list(set(a_ids) & set(b_ids))
     if not shared_ids:
         raise ValueError("Preds do not share any view")
@@ -63,10 +63,12 @@ def get_shared_preds(
     preds_a_shared = {
         k: v[preds_a_idcs] 
         for k, v in preds_a.asdict().items()
+        if v is not None
     }
     preds_b_shared = {
         k: v[preds_b_idcs]
         for k, v in preds_b.asdict().items()
+        if v is not None
     }
 
     if len(shared_ids) == 1:
