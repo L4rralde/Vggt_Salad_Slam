@@ -115,14 +115,16 @@ class Sim3(MatrixTransform):
         return self.__class__(inv_mat)
     
     def transform(self, pred: Prediction) -> Prediction:
-        s = np.linalg.det(self._matrix[:3, :3])**(1/3)
+        sR = self._matrix[:3, :3]
+        t = self._matrix[:3, 3]
+
+        s = np.linalg.det(sR)**(1/3)
         new_depth = s * pred.depth
         new_extrinsics = s * pred.extrinsic @ np.linalg.inv(self._matrix)
         if pred.pointmap is None:
             new_pointmap = None
         else:
-            new_pointmap = \
-                self._matrix[:3, :3] @ pred.pointmap + self._matrix[:3, 3]
+            new_pointmap = pred.pointmap @ sR.T + t
         new_pred = replace(
             pred,
             depth=new_depth,
