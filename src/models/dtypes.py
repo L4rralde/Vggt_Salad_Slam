@@ -43,3 +43,17 @@ class Prediction:
 
     def asdict(self) -> Dict[str, np.ndarray]:
         return asdict(self)
+
+    @classmethod
+    def from_npz_file(cls, path):
+        d = dict(np.load(path, allow_pickle=True))
+        to_drop = [
+            k for k, v in d.items()
+            if v.size == 1 and v.item() == None
+        ]
+
+        print
+        for drop_k in to_drop:
+            d.pop(drop_k)
+
+        return cls.from_dict(d)
