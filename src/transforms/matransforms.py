@@ -133,6 +133,24 @@ class Sim3(MatrixTransform):
         )
         return new_pred
 
+
+def rq_decomposition(A):
+    Q, R = np.linalg.qr(
+        np.swapaxes(np.flip(A, axis=-2), -1, -2)
+    )
+    
+    # Correct the shapes and orientations
+    R = np.flip(
+        np.swapaxes(R, -1, -2),
+        axis=-2
+    )
+    R = np.flip(R, axis=-1)
+    Q = np.swapaxes(Q, -1, -2)
+    Q = np.flip(Q, axis=-2)
+    
+    return R, Q
+
+
 class Affine(MatrixTransform):
     def __init__(self, matrix: np.ndarray | None=None) -> None:
         if matrix is None:
@@ -158,6 +176,56 @@ class Affine(MatrixTransform):
 
         return self.__class__(inv_mat)
     
+    def transform(self, pred: Prediction) -> Prediction:
+        A = self._matrix[:3, :3]
+        t = self._matrix[:3, 3]
+
+        K = pred.intrinsic
+        R = pred.extrinsic[..., :3, :3]
+        T = pred.extrinsic[..., :3, 3]
+
+        M = K @ R @ np.linalg.inv(A)
+
+        K_new, R_new = rq_decomposition(M)
+
+        diag_sign = np.sign(np.diagonal(K_new, axis1=-2, axis2=-1))
+        S = np.zeros_like(K_new)
+        idx = np.arange(3)
+        S[..., idx, idx] = diag_sign
+
+        K_new = K_new @ S
+        R_new = S @ R_new
+
+        scale = 1.0 / K_new[..., 2, 2]
+        scale = scale[..., None, None]
+
+        K_new = scale * K_new
+
+        K_corr = np.linalg.inv(K_new) @ K
+        T_corr = np.squeeze(K_corr @ T[..., None], axis=-1)
+
+        new_trans = T_corr - R_new @ t
+
+        new_extr = pred.extrinsic.copy()
+        new_extr[..., :3, :3] = R_new
+        new_extr[..., :3, 3] = new_trans
+
+        if pred.pointmap is None:
+            new_pointmap = None
+        else:
+            new_pointmap = pred.pointmap @ A.T + t
+        
+        new_depth = scale * pred.depth
+
+        new_pred = replace(
+            pred,
+            depth=new_depth,
+            extrinsic=new_extr,
+            intrinsic=K_new,
+            pointmap=new_pointmap
+        )
+        return new_pred
+
 
 class Homography(MatrixTransform):
     def __init__(self, matrix: Any | None=None) -> None:
