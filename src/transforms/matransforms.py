@@ -4,6 +4,7 @@ from typing import Any
 import numpy as np
 
 from src.models.dtypes import Prediction
+from dataclasses import replace
 
 
 def canonical_homogeneous(matrix: np.ndarray) -> np.ndarray:
@@ -19,6 +20,28 @@ def canonical_homogeneous(matrix: np.ndarray) -> np.ndarray:
         raise ValueError("Homogeneous matrix has zero in (3,3) entry, cannot normalize")
     homo_matrix /= homo_matrix[3,3]
     return homo_matrix
+
+
+class MatrixTransform(ABC):
+    def __init__(self, matrix: np.ndarray|None=None) -> None:
+        self._matrix = None
+
+    def __call__(self, pred: Prediction) -> Prediction:
+        return self.transform(pred)
+    
+    @abstractmethod
+    def transform(self, pred: Prediction|np.ndarray) -> Prediction:
+        raise NotImplementedError
+
+    @abstractmethod
+    def inv(self) -> "MatrixTransform":
+        raise NotImplementedError()
+
+    def copy(self) -> "MatrixTransform":
+        return self.__class__(self._matrix.copy())
+
+    def __matmul__(self, other: "MatrixTransform") -> "MatrixTransform":
+        return matrix_transforms_matmul(self, other)
 
 
 def matrix_transforms_matmul(left: MatrixTransform, right: MatrixTransform) -> MatrixTransform:
@@ -40,26 +63,6 @@ def matrix_transforms_matmul(left: MatrixTransform, right: MatrixTransform) -> M
 
     return cast_type(left._matrix @ right._matrix)
 
-
-class MatrixTransform(ABC):
-    def __init__(self, matrix: np.ndarray|None=None) -> None:
-        self._matrix = None
-
-    @abstractmethod
-    def transform(self, pred: Prediction|np.ndarray) -> Prediction:
-        raise NotImplementedError
-
-    @abstractmethod
-    def inv(self) -> "MatrixTransform":
-        raise NotImplementedError()
-
-    def copy(self) -> "MatrixTransform":
-        return self.__class__(self._matrix.copy())
-
-    def __matmul__(self, other: MatrixTransform) -> "MatrixTransform":
-        return matrix_transforms_matmul(self, other)
-
-
 class SE3(MatrixTransform):
     def __init__(self, matrix: np.ndarray|None=None) -> None:
         if matrix is None:
@@ -73,7 +76,7 @@ class SE3(MatrixTransform):
         self._matrix = np.eye(4, dtype=matrix.dtype)
         self._matrix[:3] = matrix[:3]
     
-    def inv(self) -> SE3:
+    def inv(self) -> "SE3":
         rot_inv = np.transpose(self._matrix[:3, :3])
         t_inv = - rot_inv @ self._matrix[:3, 3]
         new_mat = np.eye(4, dtype=self._matrix.dtype)
@@ -96,7 +99,7 @@ class Sim3(MatrixTransform):
         
         self._matrix = np.eye(4, dtype=matrix.dtype)
         self._matrix[:3] = matrix[:3]
-
+    
     def inv(self) -> "Sim3":
         rot_scale = self._matrix[:3, :3]
         scale = np.linalg.det(rot_scale)**(1/3)
@@ -111,6 +114,22 @@ class Sim3(MatrixTransform):
 
         return self.__class__(inv_mat)
     
+    def transform(self, pred: Prediction) -> Prediction:
+        s = np.linalg.det(self._matrix[:3, :3])**(1/3)
+        new_depth = s * pred.depth
+        new_extrinsics = s * pred.extrinsic @ np.linalg.inv(self._matrix)
+        if pred.pointmap is None:
+            new_pointmap = None
+        else:
+            new_pointmap = \
+                self._matrix[:3, :3] @ pred.pointmap + self._matrix[:3, 3]
+        new_pred = replace(
+            pred,
+            depth=new_depth,
+            extrinsic=new_extrinsics,
+            pointmap=new_pointmap
+        )
+        return new_pred
 
 class Affine(MatrixTransform):
     def __init__(self, matrix: np.ndarray | None=None) -> None:

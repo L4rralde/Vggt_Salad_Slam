@@ -3,9 +3,9 @@ from scipy.special import huber
 from scipy.optimize import minimize
 
 from src.models.dtypes import Prediction
-import matransforms as mt
-import vggt_long_sim3_utils as vggt_long
-from utils import (
+from . import matransforms as mt
+from . import  vggt_long_sim3_utils as vggt_long
+from .utils import (
     depth_to_pointmap,
     get_conf_mask,
     extr_to_homogeneous,
@@ -72,15 +72,17 @@ def estimate_scale(
 ) -> float:
     src_preds, tgt_preds = get_shared_preds(src_preds, tgt_preds)
     if src_preds.depth.shape == tgt_preds.depth.shape:
+
         weights = np.min(
-            np.vstack((src_preds.depth_conf, tgt_preds.depth_conf)),
-            axis=0
+            np.vstack((src_preds.depth_conf[None], tgt_preds.depth_conf[None])),
+            axis=0,
         )
         mask = get_conf_mask(src_preds) & get_conf_mask(tgt_preds)
+        
         s = estimate_scale_from_depth_maps(
             src_preds.depth[mask],
             tgt_preds.depth[mask],
-            weights
+            weights[mask]
         )
     elif len(src_preds.ids) > 1:
         s = estimate_scale_from_extrinsics(
@@ -96,19 +98,8 @@ def vggtlong_est_scenes_transform(
     src_preds: Prediction,
     tgt_preds: Prediction
 ) -> mt.Sim3:
-    src_ids = list(src_preds.ids)
-    tgt_ids = list(tgt_preds.ids)
-
-    common_ids = set(src_ids).intersection(set(tgt_ids))
-    if not common_ids:
-        raise ValueError("No overlapping views")
-    
-    src_idcs = [src_ids.index(id) for id in common_ids]
-    dst_idcs = [tgt_ids.index(id) for id in common_ids]
-
-    src_conf = src_preds.depth_conf[src_idcs]
-    tgt_conf = tgt_preds.depth_conf[dst_idcs]
-    common_mask = get_conf_mask(src_conf) & get_conf_mask(tgt_conf)
+    src_preds, tgt_preds = get_shared_preds(src_preds, tgt_preds)
+    common_mask = get_conf_mask(src_preds) & get_conf_mask(tgt_preds)
 
     src_point = depth_to_pointmap(
         src_preds.depth,
@@ -121,11 +112,11 @@ def vggtlong_est_scenes_transform(
         tgt_preds.extrinsic
     )
 
-    src_point = src_point[src_idcs][common_mask]
-    tgt_point = tgt_point[dst_idcs][common_mask]
+    src_point = src_point[common_mask]
+    tgt_point = tgt_point[common_mask]
 
     initial_weights = np.min(
-        np.vstack((src_conf[common_mask], tgt_conf[common_mask])),
+        np.vstack((src_preds.depth_conf[common_mask], tgt_preds.depth_conf[common_mask])),
         axis=0
     )
     s, R, t = vggt_long.robust_weighted_estimate_sim3(
@@ -157,7 +148,7 @@ def estimate_sim3_from_extrinsics(
 
     sim3_estimates = [mt.Sim3(mat) for mat in view_sim3_mat]
     #Future average all estimations
-    return mt.Sim3(sim3_estimates[0])
+    return sim3_estimates[0]
 
 #TODO. estimate Homographies with my method
 def estimate_affine_from_extrinsics(
@@ -168,8 +159,13 @@ def estimate_affine_from_extrinsics(
     s = estimate_scale(src_preds, tgt_preds)
     src_extrinsic = extr_to_homogeneous(src_preds.extrinsic)
     tgt_extrinsic = extr_to_homogeneous(tgt_preds.extrinsic)
-    src_intrinsic = extr_to_homogeneous(src_preds.intrinsic)
-    tgt_intrinsic = extr_to_homogeneous(tgt_preds.intrinsic)
+
+    src_intrinsic = np.zeros_like(src_extrinsic)
+    src_intrinsic[..., :3, :3] = src_preds.intrinsic
+    src_intrinsic[..., 3, 3] = 1.0
+    tgt_intrinsic = np.zeros_like(tgt_extrinsic)
+    tgt_intrinsic[..., :3, :3] = tgt_preds.intrinsic
+    tgt_intrinsic[..., 3, 3] = 1.0
 
     matrix_estimates = (
         np.linalg.inv(tgt_extrinsic) @
@@ -177,7 +173,7 @@ def estimate_affine_from_extrinsics(
         src_extrinsic
     )
     #Future average all estimations
-    return matrix_estimates[0]
+    return mt.Affine(matrix_estimates[0])
 
 #TODO. estimate Homographies with VGGT-SLAM 1.0 method
 
