@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Type, Any
 
 import numpy as np
 
@@ -23,7 +23,7 @@ def canonical_homogeneous(matrix: np.ndarray) -> np.ndarray:
 
 
 class MatrixTransform(ABC):
-    def __init__(self, matrix: np.ndarray|None=None) -> None:
+    def __init__(self, matrix: Any=None) -> None:
         self._matrix = None
 
     def __call__(self, pred: Prediction) -> Prediction:
@@ -42,32 +42,29 @@ class MatrixTransform(ABC):
 
     def __matmul__(self, other: "MatrixTransform") -> "MatrixTransform":
         return matrix_transforms_matmul(self, other)
+    
+
+def get_predominant_instance(*transforms: MatrixTransform) -> Type:
+    for mat_type in [Homography, Affine, Sim3, SE3]:
+        if any([isinstance(t, mat_type) for t in transforms]):
+            return mat_type
+    raise ValueError("Types not supported yet. Future")
 
 
 def matrix_transforms_matmul(left: MatrixTransform, right: MatrixTransform) -> MatrixTransform:
-    if not isinstance(left, MatrixTransform):
-        raise ValueError(f"input not supported: {left}")
-    if not isinstance(right, MatrixTransform):
-        raise ValueError(f"input not supported: {right}")
-    
-    if isinstance(left, Homography) or isinstance(right, Homography):
-        cast_type = Homography
-    elif isinstance(left, Affine) or isinstance(right, Affine):
-        cast_type = Affine
-    elif isinstance(left, Sim3) or isinstance(right, Sim3):
-        cast_type = Affine
-    elif isinstance(left, SE3) or isinstance(right, SE3):
-        cast_type = SE3
-    else:
-        raise ValueError("Types not supported yet. Future")
-
+    cast_type = get_predominant_instance(left, right)
     return cast_type(left._matrix @ right._matrix)
 
+
 class SE3(MatrixTransform):
-    def __init__(self, matrix: np.ndarray|None=None) -> None:
+    def __init__(self, matrix: Any=None) -> None:
         if matrix is None:
             self._matrix = np.eye(4)
             return
+        
+        if isinstance(matrix, MatrixTransform):
+            matrix = matrix._matrix
+        
         matrix = canonical_homogeneous(matrix)
         if not np.allclose(matrix[3, :3], np.asarray([0,0,0])):
             raise ValueError(f"Invalid SE(3) matrix: {matrix}")
@@ -87,10 +84,14 @@ class SE3(MatrixTransform):
 
 
 class Sim3(MatrixTransform):
-    def __init__(self, matrix: np.ndarray|None=None) -> None:
+    def __init__(self, matrix: Any=None) -> None:
         if matrix is None:
             self._matrix = np.eye(4)
             return
+        
+        if isinstance(matrix, MatrixTransform):
+            matrix = matrix._matrix
+        
         matrix = canonical_homogeneous(matrix)
         if not np.allclose(matrix[3, :3], np.asarray([0,0,0])):
             raise ValueError(f"Invalid Sim(3) matrix: {matrix}")
@@ -134,11 +135,14 @@ class Sim3(MatrixTransform):
         return new_pred
 
 class Affine(MatrixTransform):
-    def __init__(self, matrix: np.ndarray | None=None) -> None:
+    def __init__(self, matrix: Any=None) -> None:
         if matrix is None:
             self._matrix = np.eye(4)
             return
 
+        if isinstance(matrix, MatrixTransform):
+            matrix = matrix._matrix
+        
         matrix = canonical_homogeneous(matrix)
         if not np.allclose(matrix[3, :3], np.asarray([0,0,0])):
             raise ValueError(f"Invalid Affine matrix: {matrix}")
@@ -160,10 +164,13 @@ class Affine(MatrixTransform):
     
 
 class Homography(MatrixTransform):
-    def __init__(self, matrix: Any | None=None) -> None:
+    def __init__(self, matrix: Any=None) -> None:
         if matrix is None:
             self._matrix = np.eye(4)
             return
+        
+        if isinstance(matrix, MatrixTransform):
+            matrix = matrix._matrix
     
         matrix = canonical_homogeneous(matrix)
         if not np.linalg.det(matrix) > 1e-6:
@@ -173,4 +180,3 @@ class Homography(MatrixTransform):
     
     def inv(self) -> "Homography":
         return self.__class__(np.linalg.inv(self._matrix))
-
