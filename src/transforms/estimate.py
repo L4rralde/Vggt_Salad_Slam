@@ -29,6 +29,9 @@ def estimate_scale_from_depth_maps(
     else:
         weights = np.sqrt(np.asarray(weights).reshape(N,))
 
+    src_depth = src_depth.ravel()
+    tgt_depth = tgt_depth.ravel()
+
     loss = lambda s: huber(1e-3, weights*(tgt_depth - s*src_depth)).sum()
     scale = minimize(loss, 1.0).x[0]
 
