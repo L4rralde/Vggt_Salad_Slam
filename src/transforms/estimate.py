@@ -6,10 +6,11 @@ from src.models.dtypes import Prediction
 from . import matransforms as mt
 from . import  vggt_long_sim3_utils as vggt_long
 from .utils import (
+    get_pointmap,
     depth_to_pointmap,
     get_conf_mask,
     extr_to_homogeneous,
-    get_shared_preds
+    get_shared_preds,
 )
 
 
@@ -101,16 +102,8 @@ def vggtlong_est_scenes_transform(
     src_preds, tgt_preds = get_shared_preds(src_preds, tgt_preds)
     common_mask = get_conf_mask(src_preds) & get_conf_mask(tgt_preds)
 
-    src_point = depth_to_pointmap(
-        src_preds.depth,
-        src_preds.intrinsic,
-        src_preds.extrinsic
-    )
-    tgt_point = depth_to_pointmap(
-        tgt_preds.depth,
-        tgt_preds.intrinsic,
-        tgt_preds.extrinsic
-    )
+    src_point = get_pointmap(src_preds)
+    tgt_point = get_pointmap(tgt_preds)
 
     src_point = src_point[common_mask]
     tgt_point = tgt_point[common_mask]
@@ -133,7 +126,6 @@ def vggtlong_est_scenes_transform(
 #FUTURE. Swift-VGGT estimation
 
 
-#TODO estimate sim3 using trajectories (and optionally depthmaps)
 def estimate_sim3_from_extrinsics(
     src_preds: Prediction,
     tgt_preds: Prediction,
@@ -150,7 +142,7 @@ def estimate_sim3_from_extrinsics(
     #Future average all estimations
     return sim3_estimates[0]
 
-#TODO. estimate Homographies with my method
+
 def estimate_affine_from_extrinsics(
     src_preds: Prediction,
     tgt_preds: Prediction

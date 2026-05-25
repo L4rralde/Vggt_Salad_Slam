@@ -1,10 +1,11 @@
 from abc import ABC, abstractmethod
 from typing import Type, Any
+from dataclasses import replace
 
 import numpy as np
 
 from src.models.dtypes import Prediction
-from dataclasses import replace
+from .utils import get_pointmap
 
 
 def canonical_homogeneous(matrix: np.ndarray) -> np.ndarray:
@@ -248,3 +249,22 @@ class Homography(MatrixTransform):
     
     def inv(self) -> "Homography":
         return self.__class__(np.linalg.inv(self._matrix))
+
+    def transform(self, pred: Prediction) -> Prediction:
+        print("Warning! By the moment the Homography class only transforms pointmaps")
+    
+        pointmap = get_pointmap(pred)
+
+        A = self._matrix[:3, :3]
+        t = self._matrix[:3, 3]
+        v = self._matrix[3, :3]
+
+        new_pointmap = pointmap @ A.T + t
+        pers_scale = 1 + pointmap @ v[..., None] #(n, h, w, 3) @ (3, 1) = (n, h, w, 1)
+        new_pointmap = new_pointmap / pers_scale
+
+        new_pred = replace(
+            pointmap=new_pointmap
+        )
+
+        return new_pred
