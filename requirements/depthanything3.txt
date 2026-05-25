@@ -23,3 +23,12 @@ plyfile
 trimesh
 
 pycolmap==3.13.0
+
+
+#slam dependencies
+#pypose
+gtsam-develop
+scipy
+
+#For visualization
+open3d
