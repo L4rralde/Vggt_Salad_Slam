@@ -11,3 +11,9 @@ venvs
 output
 preds
 *.jpg
+*.jpeg
+*.npz
+*.pt
+*.db
+*.DS_Store
+*.log

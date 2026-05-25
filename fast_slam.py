@@ -19,8 +19,6 @@ class Frame:
     img: Image.Image
 
 
-
-
 def video_publisher(video_path: str, frame_q: Queue, model_ready: mp.Event) -> None:
     video = get_publisher(video_path)
     fps = video.get_fps()
@@ -45,14 +43,14 @@ def video_publisher(video_path: str, frame_q: Queue, model_ready: mp.Event) -> N
             print("[WARNING], frame_q is full.")
         frame_q.put(Frame(id, stamp, pil_img))
         frame_cnt += 1
-        #cv2.imshow('video', frame)
-        #cv2.waitKey(25)
+        cv2.imshow('video', frame)
+        cv2.waitKey(20)
         while time() - prev_time < period:
             sleep(period/20.0)
         prev_time = time()
 
     video.release()
-    #cv2.destroyWindow("video")
+    cv2.destroyWindow("video")
 
 
 def keyframe_publisher(keyframe_q: Queue) -> None:
@@ -73,13 +71,14 @@ class ViewToken:
 
 
 def video_processing(frame_q: Queue, kframes_q: Queue, preds_q: Queue, model_ready: mp.Event) -> None:
+    from collections import defaultdict
     from src.models import get_model
     from src.keyframes import KeyFramesDetector, CloseLoopDetector
 
     print("Loading model...")
     start = perf_counter()
     model = get_model(
-        'da3-base',
+        'mapanything',
         '/home/emmanuel/Desktop/tesis/Visual_Place_Recognition'
     )
     end = perf_counter()
@@ -96,14 +95,17 @@ def video_processing(frame_q: Queue, kframes_q: Queue, preds_q: Queue, model_rea
     keyframes_cp = SoftLink('output/keyframes', frames.root, clear=True)
     frames_cache = FIFOCache(64)
     #descriptors = TensorRepository('output/viewpreds/descriptors', clear=True)
-    patch_tokens = TensorRepository('output/viewpreds/patch_tokens')
-    processed_imgs = TensorRepository('output/viewpreds/processed_imgs')
+    patch_tokens = TensorRepository('output/viewpreds/patch_tokens', clear=True)
+    processed_imgs = TensorRepository('output/viewpreds/processed_imgs', clear=True)
     viewpreds_cache = FIFOCache(32)
     loop_detector = CloseLoopDetector()
 
     to_encode_ids = [] #Ids to encode.
     to_predict_ids = []
     predicted_ids = []
+    chunk_cnt = 0
+    chunk_dict = defaultdict(list)
+
     keyframe_detector = KeyFramesDetector() #Detects if a frame is a new frame
     model_ready.set()
     while True:
@@ -118,6 +120,8 @@ def video_processing(frame_q: Queue, kframes_q: Queue, preds_q: Queue, model_rea
         _id = frames.append(frame.img, frame.stamp) #Save frame in disk
         if _id != frame.id:
             raise RuntimeError(f"Packet loss: ({frame.id}, {_id})")
+        if _id % 4 != 0:
+            continue
         frames_cache.append(frame.id, frame) #Add frame to cache
         to_encode_ids.append(frame.id)
         
@@ -147,7 +151,7 @@ def video_processing(frame_q: Queue, kframes_q: Queue, preds_q: Queue, model_rea
 
         #3. Keyframe selection
         #This is fast. Not a bottleneck. Approx 50ns per frame.
-        kf_ids, kf_preds = keyframe_detector(encoded_ids, view_preds, th=0.65)
+        kf_ids, kf_preds = keyframe_detector(encoded_ids, view_preds, th=0.85)
         if not kf_ids:
             continue
             
@@ -190,18 +194,23 @@ def video_processing(frame_q: Queue, kframes_q: Queue, preds_q: Queue, model_rea
         match = loop_detector(
             query_ids = predicted_ids[-2:] + to_predict_ids,
             ref_ids = predicted_ids[:-20],
-            th = 0.6
+            th = 0.7
         )
         end = perf_counter()
 
         if match is not None:
             query_match, ref_match, sim = match
             print(f"Found match ({query_match}, {ref_match}) with sim {sim}")
-            print(f"Loop Closure call took {end - start:.4f} seconds")
-            loop_closure_idx = predicted_ids.index(ref_match)
-            l_idx = max(0, loop_closure_idx - 2)
-            r_idx = min(loop_closure_idx + 3, len(predicted_ids))
-            loop_aligning_ids = [predicted_ids[i] for i in range(l_idx, r_idx)]
+            print(f"Loop detection call took {end - start:.4f} seconds")
+            found_closed_chunk = False
+            for chunk, frame_ids in chunk_dict.items():
+                if ref_match in frame_ids:
+                    found_closed_chunk = True
+                    break
+            if not found_closed_chunk:
+                raise RuntimeError(f"Found not corresponding chunk of closing frame with id: {ref_match}")
+            
+            loop_aligning_ids = frame_ids
             print(f"Appending ids to next sequence prediction: {loop_aligning_ids}")
         else:
             loop_aligning_ids = []
@@ -229,7 +238,9 @@ def video_processing(frame_q: Queue, kframes_q: Queue, preds_q: Queue, model_rea
         end = perf_counter()
         print(f"Sequence prediction of size {len(chunk_ids)} took {end - start:.3f} seconds")
 
+        chunk_dict[chunk_cnt] = to_predict_ids
         predicted_ids += to_predict_ids
+        chunk_cnt += 1
         to_predict_ids = []
 
         preds.ids = np.asarray(chunk_ids, dtype=np.uint32)
@@ -282,7 +293,7 @@ def main():
     model_ready = mp.Event()
     p_publisher = mp.Process(
         target=video_publisher,
-        args=("/home/emmanuel/Downloads/cimat_loop.mp4", q_frames, model_ready)
+        args=("/home/emmanuel/Desktop/videos/dji_fly_20260323_195503_0_1774317303930_video_low_quality.mp4", q_frames, model_ready)
     )
     p_processing = mp.Process(
         target=video_processing,

@@ -132,15 +132,15 @@ class Algorithm(ABC):
         eps: float = 1e-6
     ):
         self.__edges: List[Edge] = edges
-        self.__vertices: List[Vertex] = vertices
+        self._vertices: List[Vertex] = vertices
         self.eps: float = eps
         self.__pose_type: Type[transforms.Transform] = self.get_pose_type()
         self.__edge_types_list: List[Type[Edge]] = self.get_edges_type_list()
 
     def get_pose_type(self) -> Type[transforms.Transform]:
-        if not self.__vertices:
+        if not self._vertices:
             return None
-        vertex_types = set(v.estimate.__class__ for v in self.__vertices)
+        vertex_types = set(v.estimate.__class__ for v in self._vertices)
         assert len(vertex_types) == 1
         return list(vertex_types)[0]
 
@@ -155,11 +155,11 @@ class Algorithm(ABC):
 
     @property
     def vertices(self) -> List[Vertex]:
-        return self.__vertices
+        return self._vertices
     
     @property
     def n(self) -> int:
-        return len(self.__vertices)
+        return len(self._vertices)
 
     @property
     def m(self) -> int:
@@ -203,7 +203,7 @@ class Algorithm(ABC):
         return 1.0
 
     def update_vertices(self, delta: torch.Tensor) -> None:
-        for i, vertex in enumerate(self.__vertices):
+        for i, vertex in enumerate(self._vertices):
             vertex.update(delta[i])
 
     def update_edges(self) -> None:
@@ -220,8 +220,8 @@ class Algorithm(ABC):
         self.edges.append(edge)
 
     def append_vertex(self, vertex: Vertex) -> None:
-        assert vertex.idx == len(self.__vertices)
-        self.__vertices.append(vertex)
+        assert vertex.idx == len(self._vertices)
+        self._vertices.append(vertex)
 
     def loss(self) -> float:
         acc = 0.0
