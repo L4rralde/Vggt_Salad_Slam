@@ -264,6 +264,7 @@ class Homography(MatrixTransform):
         new_pointmap = new_pointmap / pers_scale
 
         new_pred = replace(
+            pred,
             pointmap=new_pointmap
         )
 
