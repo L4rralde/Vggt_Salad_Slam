@@ -65,8 +65,8 @@ class MapAnythingSaladSplit:
                 )
 
         view_preds = ViewPrediction(
-            images.cpu(),
-            patch_tokens.cpu(),
+            images,
+            patch_tokens,
             descriptor.cpu()
         )
 
@@ -79,8 +79,8 @@ class MapAnythingSaladSplit:
         raise NotImplementedError() #FUTURE
 
     def chunk_prediction(self, view_preds: Dict[str, torch.Tensor]) -> Dict[str, np.ndarray]:
-        images = view_preds.images.to(self.device)
-        patch_tokens = view_preds.patch_tokens.to(self.device)
+        images = view_preds.images
+        patch_tokens = view_preds.patch_tokens
 
         num_views, c, height, width = images.shape
         img_shape = (int(height), int(width))

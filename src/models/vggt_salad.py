@@ -52,8 +52,8 @@ class VggtSaladSplit:
         #Preparing predictions for future steps.
 
         view_preds = ViewPrediction(
-            images.squeeze(0).cpu(),
-            patch_tokens.cpu(),
+            images,
+            patch_tokens,
             descriptor.cpu()
         )
 
@@ -65,11 +65,11 @@ class VggtSaladSplit:
         with torch.no_grad():
             with torch.amp.autocast(self.device, dtype=dtype):
                 aggregated_tokens_list, _ = self.backbone.alternate_attention(
-                    view_preds.images.unsqueeze(0).to(self.device),
-                    view_preds.patch_tokens.to(self.device)
+                    view_preds.images,
+                    view_preds.patch_tokens
                 )
         seq_preds = Dict()
-        seq_preds['seq_tokens_list'] = [t.cpu() for t in aggregated_tokens_list]
+        seq_preds['seq_tokens_list'] = [t for t in aggregated_tokens_list]
         seq_preds['images'] = view_preds.images
         #torch.cuda.empty_cache()
 
@@ -79,9 +79,9 @@ class VggtSaladSplit:
         dtype = torch.bfloat16 if torch.cuda.get_device_capability()[0] >= 8 else torch.float16
         with torch.no_grad():
             with torch.amp.autocast(self.device, dtype=dtype):
-                seq_token_list = [t.to(self.device) for t in seq_preds.seq_tokens_list]
+                seq_token_list = [t for t in seq_preds.seq_tokens_list]
                 predictions = self.backbone.heads_forward(
-                    seq_preds.images.unsqueeze(0).to(self.device),
+                    seq_preds.images,
                     seq_token_list,
                     self.backbone.vggt.aggregator.patch_start_idx,
                     query_points=None
@@ -116,8 +116,8 @@ class VggtSaladSplit:
         dtype = torch.bfloat16 if torch.cuda.get_device_capability()[0] >= 8 else torch.float16
         with torch.no_grad():
             with torch.amp.autocast(self.device, dtype=dtype):
-                images = view_preds.images.unsqueeze(0).to(self.device)
-                patch_tokens = view_preds.patch_tokens.to(self.device)
+                images = view_preds.images
+                patch_tokens = view_preds.patch_tokens
                 aggregated_tokens_list, patch_start_idx = self.backbone.alternate_attention(
                     images,
                     patch_tokens
