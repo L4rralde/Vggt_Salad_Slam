@@ -125,7 +125,14 @@ class Sim3Graph:
 
         initial_error = self.graph.error(values)
         result = optimizer.optimize()
-        final_error = self.graph.error(result)
+        final_error = self.graph.error(result) 
+
+        reversed_ids_map = {int_id: key for key, int_id in self._ids_map.items()}
+
+        new_estimates = {}
+        for i in self._prior_estimations.keys():
+            sim3_result = result.atSimilarity3(i)
+            new_estimates[reversed_ids_map[i]] = gtsam_to_matt_sim3(sim3_result)
 
         if verbose:
             print(f"Previous error: {initial_error}")
