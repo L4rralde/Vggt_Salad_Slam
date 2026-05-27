@@ -1,4 +1,4 @@
-from typing import Hashable, Dict, Type
+from typing import Hashable, Dict, Type, Tuple
 from collections import OrderedDict
 
 import gtsam
@@ -114,7 +114,7 @@ class Sim3Graph:
             )
         )
         
-    def optimize(self, verbose:bool=False) -> Dict[Hashable, matt.Sim3]:
+    def optimize(self, verbose:bool=False) -> Tuple[Dict[Hashable, matt.Sim3]]:
         values = gtsam.Values()
         for i, est in self._prior_estimations.items():
             assert isinstance(est, matt.Sim3)
@@ -125,20 +125,28 @@ class Sim3Graph:
 
         initial_error = self.graph.error(values)
         result = optimizer.optimize()
-        final_error = self.graph.error(result) 
-
-        reversed_ids_map = {int_id: key for key, int_id in self._ids_map.items()}
-
-        new_estimates = {}
-        for i in self._prior_estimations.keys():
-            sim3_result = result.atSimilarity3(i)
-            new_estimates[reversed_ids_map[i]] = gtsam_to_matt_sim3(sim3_result)
+        final_error = self.graph.error(result)
 
         if verbose:
             print(f"Previous error: {initial_error}")
             print(f"New error: {final_error}")
+
+        reversed_ids_map = {int_id: key for key, int_id in self._ids_map.items()}
+
+        new_estimates = OrderedDict()
+        for i in self._prior_estimations.keys():
+            sim3_result = result.atSimilarity3(i)
+            new_estimates[reversed_ids_map[i]] = gtsam_to_matt_sim3(sim3_result)
         
-        return new_estimates
+        prev_estimates = OrderedDict({
+            reversed_ids_map[i]: est
+            for i, est in self._prior_estimations.items()
+        })
+
+        return (
+            OrderedDict(sorted(prev_estimates.items())), 
+            OrderedDict(sorted(new_estimates.items()))
+        )
 
 
 class SL4Graph:
@@ -210,7 +218,7 @@ class SL4Graph:
             )
         )
 
-    def optimize(self, verbose:bool=False) -> Dict[Hashable, matt.Homography]:
+    def optimize(self, verbose:bool=False) -> Tuple[Dict[Hashable, matt.Homography]]:
         values = gtsam.Values()
         for i, est in self._prior_estimations.items():
             assert isinstance(est, matt.Homography)
@@ -223,15 +231,24 @@ class SL4Graph:
         result = optimizer.optimize()
         final_error = self.graph.error(result) 
 
+        if verbose:
+            print(f"Previous error: {initial_error}")
+            print(f"New error: {final_error}")
+
         reversed_ids_map = {int_id: key for key, int_id in self._ids_map.items()}
 
-        new_estimates = {}
+        new_estimates = OrderedDict()
         for i in self._prior_estimations.keys():
             sl4 = result.atSL4(i)
             new_estimates[reversed_ids_map[i]] = gtsam_sl4_to_matt_homography(sl4)
         
-        if verbose:
-            print(f"Previous error: {initial_error}")
-            print(f"New error: {final_error}")
+        prev_estimates = OrderedDict({
+            reversed_ids_map[i]: est
+            for i, est in self._prior_estimations.items()
+        })
+
         
-        return new_estimates
+        return (
+            OrderedDict(sorted(prev_estimates.items())), 
+            OrderedDict(sorted(new_estimates.items()))
+        )
