@@ -1,4 +1,4 @@
-from typing import Hashable, Dict, Type, Tuple
+from typing import Hashable, Dict, Type, Tuple, List
 from collections import OrderedDict
 
 import gtsam
@@ -39,6 +39,7 @@ def gtsam_sl4_to_matt_homography(gtsam_sl4: gtsam.SL4) -> matt.Homography:
     return matt.Homography(sl4_matrix)
 
 
+
 class Sim3Graph:
     NDOF = 7
     def __init__(self):
@@ -63,13 +64,13 @@ class Sim3Graph:
         if id in self._ids_map:
             raise RuntimeError("Id already in graph. This must be the first node to add")
         
-        self._ids_map[id] = self._current_id
-        self._current_id += 1
-        
         if est is None:
             est = matt.Sim3()
         
-        self._prior_estimations[0] = est
+        self._ids_map[id] = self._current_id
+        self._prior_estimations[self._current_id] = est
+        self._current_id += 1
+
         gtsam_sim3 = matt_sim3_to_gtsam(est)
  
         self.graph.add(
@@ -157,7 +158,7 @@ class Sim3Graph:
 
 
 class SL4Graph:
-    NDOF=15
+    NDOF = 15
     def __init__(self):
         self.graph = gtsam.NonlinearFactorGraph()
         self.anchor_noise = gtsam.noiseModel.Diagonal.Sigmas(
@@ -173,7 +174,7 @@ class SL4Graph:
     def add_anchor_prior(
         self,
         id: Hashable,
-        est: matt.MatrixTransform|None=None
+        est: matt.Sim3|None = None
     ) -> None:
         if self._current_id != 0:
             raise RuntimeError("This must be the first node to add")
@@ -182,26 +183,32 @@ class SL4Graph:
         
         self._ids_map[id] = self._current_id
         self._current_id += 1
-
+        
         if est is None:
             est = matt.Homography()
         
-        self._prior_estimations[0] = matt.Homography(est)
-        sl4 = matt_homography_to_gtsam_sl4(est)
-
+        self._prior_estimations[0] = est
+        gtsam_sl4 = matt_homography_to_gtsam_sl4(est)
+ 
         self.graph.add(
-            gtsam.PriorFactorSL4(0, sl4, self.anchor_noise)
+            gtsam.PriorFactorSL4(
+                0, gtsam_sl4, self.anchor_noise
+            )
         )
-    
+
     def add_measurement(
         self,
         parent: Hashable,
         child: Hashable,
-        meas: matt.MatrixTransform
+        meas: matt.Homography|matt.Affine
     ) -> None:
         if not parent in self._ids_map:
             raise ValueError("Unknown parent")
         
+        type_check = isinstance(meas, matt.MatrixTransform)
+        if not type_check:
+            raise ValueError(f"Incorrect measurment type: {type(meas)}") 
+
         child_exists = child in self._ids_map
         if not child_exists:
             self._ids_map[child] = self._current_id
@@ -224,8 +231,8 @@ class SL4Graph:
                 noiseModel=self._meas_noise
             )
         )
-
-    def optimize(self, verbose:bool=False) -> Tuple[Dict[Hashable, matt.Homography]]:
+        
+    def optimize(self, verbose:bool=False) -> Tuple[Dict[Hashable, matt.Sim3]]:
         values = gtsam.Values()
         for i, est in self._prior_estimations.items():
             assert isinstance(est, matt.Homography)
@@ -236,8 +243,7 @@ class SL4Graph:
 
         initial_error = self.graph.error(values)
         result = optimizer.optimize()
-        final_error = self.graph.error(result) 
-
+        final_error = self.graph.error(result)
         if verbose:
             print(f"Previous error: {initial_error}")
             print(f"New error: {final_error}")
@@ -246,16 +252,41 @@ class SL4Graph:
 
         new_estimates = OrderedDict()
         for i in self._prior_estimations.keys():
-            sl4 = result.atSL4(i)
-            new_estimates[reversed_ids_map[i]] = gtsam_sl4_to_matt_homography(sl4)
+            sl4_result = result.atSL4(i)
+            new_estimates[reversed_ids_map[i]] = gtsam_sl4_to_matt_homography(sl4_result)
         
         prev_estimates = OrderedDict({
             reversed_ids_map[i]: est
             for i, est in self._prior_estimations.items()
         })
 
-        
         return (
             OrderedDict(sorted(prev_estimates.items())), 
             OrderedDict(sorted(new_estimates.items()))
         )
+
+
+def average_transforms(transform_list: List[matt.Sim3]):
+    if len(transform_list) == 1:
+        return transform_list[0]
+    
+    pose_type = matt.get_predominant_instance(*transform_list)
+
+    if isinstance(pose_type(), matt.Sim3):
+        graph = Sim3Graph()
+    elif isinstance(pose_type(), matt.Affine) or isinstance(pose_type, matt.Homography):
+        graph = SL4Graph()
+    else:
+        raise ValueError(f"Transformation type {pose_type} not supported")
+
+    graph.add_anchor_prior(0)
+
+    for transform in transform_list:
+        graph.add_measurement(0, 1, transform)
+
+    _, estimates = graph.optimize(verbose=False)
+
+    return estimates[1]
+    
+
+

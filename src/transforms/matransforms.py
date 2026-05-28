@@ -182,6 +182,19 @@ class Affine(MatrixTransform):
         return self.__class__(inv_mat)
     
     def transform(self, pred: Prediction) -> Prediction:
+        #print("Warning! By the moment the Affine class only transforms pointmaps")
+        pointmap = get_pointmap(pred)
+
+        A = self._matrix[:3, :3]
+        t = self._matrix[:3, 3]
+
+        new_pointmap = pointmap @ A.T + t
+
+        return replace(
+            pred,
+            pointmap=new_pointmap
+        )
+    
         A = self._matrix[:3, :3]
         t = self._matrix[:3, 3]
 
@@ -251,7 +264,7 @@ class Homography(MatrixTransform):
         return self.__class__(np.linalg.inv(self._matrix))
 
     def transform(self, pred: Prediction) -> Prediction:
-        print("Warning! By the moment the Homography class only transforms pointmaps")
+        #print("Warning! By the moment the Homography class only transforms pointmaps")
     
         pointmap = get_pointmap(pred)
 
