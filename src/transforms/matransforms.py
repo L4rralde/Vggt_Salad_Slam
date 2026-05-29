@@ -5,7 +5,7 @@ from dataclasses import replace
 import numpy as np
 
 from src.models.dtypes import Prediction
-from .utils import get_pointmap
+from .utils import get_pointmap, extr_to_homogeneous
 
 
 def canonical_homogeneous(matrix: np.ndarray) -> np.ndarray:
@@ -43,6 +43,9 @@ class MatrixTransform(ABC):
 
     def __matmul__(self, other: "MatrixTransform") -> "MatrixTransform":
         return matrix_transforms_matmul(self, other)
+
+    def transform_extrinsics(self, extr: np.ndarray) -> np.ndarray:
+        raise NotImplementedError()
     
 
 def get_predominant_instance(*transforms: MatrixTransform) -> Type:
@@ -115,6 +118,17 @@ class Sim3(MatrixTransform):
         inv_mat[:3, 3] = inv_t
 
         return self.__class__(inv_mat)
+
+    def transform_extrinsics(self, extr: np.ndarray) -> np.ndarray:
+        sR = self._matrix[:3, :3]
+        s = np.linalg.norm(sR[:, 0])
+
+        new_extrinsics = s * extr_to_homogeneous(extr) @ np.linalg.inv(self._matrix)
+        n, r, c = extr.shape
+        if r == 3:
+            new_extrinsics = new_extrinsics[:, :3]
+
+        return new_extrinsics
     
     def transform(self, pred: Prediction) -> Prediction:
         sR = self._matrix[:3, :3]
@@ -228,10 +242,8 @@ class Affine(MatrixTransform):
         new_extr[..., :3, :3] = R_new
         new_extr[..., :3, 3] = new_trans
 
-        if pred.pointmap is None:
-            new_pointmap = None
-        else:
-            new_pointmap = pred.pointmap @ A.T + t
+        pointmap = get_pointmap(pred)
+        new_pointmap = pointmap @ A.T + t
         
         new_depth = scale * pred.depth
 
