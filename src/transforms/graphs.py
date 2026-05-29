@@ -1,4 +1,4 @@
-from typing import Hashable, Dict, Type, Tuple, List
+from typing import Hashable, Dict, Type, Tuple, List, Any
 from collections import OrderedDict
 
 import gtsam
@@ -156,7 +156,30 @@ class Sim3Graph:
             OrderedDict(sorted(new_estimates.items()))
         )
 
+    def eval(self, estimations: Dict[hasattr, matt.Sim3]) -> Dict[str, Any]:
+        values = gtsam.Values()
+        for i, est in estimations.items():
+            assert isinstance(est, matt.Sim3)
+            values.insert(self._ids_map[i], matt_sim3_to_gtsam(est))
+        
+        error = self.graph.error(values)
+        marginals = gtsam.Marginals(self.graph, values)
+        
+        reversed_ids_map = {int_id: key for key, int_id in self._ids_map.items()}
+        
+        est_variances = OrderedDict()
+        for int_key, ext_id in reversed_ids_map.items():
+            pose_covariance = marginals.marginalCovariance(int_key)
+            est_var = np.diag(pose_covariance)
+            est_variances[ext_id] = est_var
+        
+        return {
+            'error': error,
+            'variances': OrderedDict(sorted(est_variances.items()))
+        }
 
+
+ 
 class SL4Graph:
     NDOF = 15
     def __init__(self):
