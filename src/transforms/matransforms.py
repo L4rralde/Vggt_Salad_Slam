@@ -85,6 +85,21 @@ class SE3(MatrixTransform):
         new_mat[:3, 3] = t_inv
         return self.__class__(new_mat)
 
+    def transform(self, pred: Prediction|np.ndarray) -> Prediction|np.ndarray:
+        R = self._matrix[:3, :3]
+        t = self._matrix[:3, 3]
+        
+        if isinstance(pred, np.ndarray):
+            if pred.shape[-1] != 3:
+                raise ValueError("Invalid input")
+            
+            return pred @ R.T + t
+        
+        pointmap = get_pointmap(pred)
+        return replace(
+            pred,
+            pointmap=pointmap
+        )
 
 
 class Sim3(MatrixTransform):
@@ -130,17 +145,22 @@ class Sim3(MatrixTransform):
 
         return new_extrinsics
     
-    def transform(self, pred: Prediction) -> Prediction:
+    def transform(self, pred: Prediction|np.ndarray) -> Prediction|np.ndarray:
         sR = self._matrix[:3, :3]
         t = self._matrix[:3, 3]
+
+        if isinstance(pred, np.ndarray):
+            if pred.shape[-1] != 3:
+                raise ValueError("Invalid input")
+            return pred @ sR.T + t
 
         s = np.linalg.det(sR)**(1/3)
         new_depth = s * pred.depth
         new_extrinsics = s * pred.extrinsic @ np.linalg.inv(self._matrix)
-        if pred.pointmap is None:
-            new_pointmap = None
-        else:
-            new_pointmap = pred.pointmap @ sR.T + t
+
+        pointmap = get_pointmap(pred)
+        new_pointmap = pointmap @ sR.T + t
+
         new_pred = replace(
             pred,
             depth=new_depth,
@@ -195,14 +215,22 @@ class Affine(MatrixTransform):
 
         return self.__class__(inv_mat)
     
-    def transform(self, pred: Prediction) -> Prediction:
+    def transform(self, pred: Prediction|np.ndarray) -> Prediction|np.ndarray:
         #print("Warning! By the moment the Affine class only transforms pointmaps")
-        pointmap = get_pointmap(pred)
 
         A = self._matrix[:3, :3]
         t = self._matrix[:3, 3]
 
+
+        if isinstance(pred, np.ndarray):
+            if pred.shape[-1] != 3:
+                raise ValueError("Invalid input")
+
+            return pred @ A.T + t
+        
+        pointmap = get_pointmap(pred)
         new_pointmap = pointmap @ A.T + t
+        
 
         return replace(
             pred,
@@ -275,14 +303,18 @@ class Homography(MatrixTransform):
     def inv(self) -> "Homography":
         return self.__class__(np.linalg.inv(self._matrix))
 
-    def transform(self, pred: Prediction) -> Prediction:
+    def transform(self, pred: Prediction|np.ndarray) -> Prediction|np.ndarray:
         #print("Warning! By the moment the Homography class only transforms pointmaps")
-    
-        pointmap = get_pointmap(pred)
-
         A = self._matrix[:3, :3]
         t = self._matrix[:3, 3]
         v = self._matrix[3, :3]
+
+        if isinstance(pred, np.ndarray):
+            if pred.shape[-1] != 3:
+                raise ValueError("Invalid input")
+            return (pred @ A.T + t) / 1 + pred @ v[..., None]
+
+        pointmap = get_pointmap(pred)
 
         new_pointmap = pointmap @ A.T + t
         pers_scale = 1 + pointmap @ v[..., None] #(n, h, w, 3) @ (3, 1) = (n, h, w, 1)

@@ -1,11 +1,12 @@
 import numpy as np
 from scipy.special import huber
 from scipy.optimize import minimize, minimize_scalar
+from typing import Callable
 
 from src.models.dtypes import Prediction
 from . import matransforms as mt
 from . import  vggt_long_sim3_utils as vggt_long
-from .graphs import average_transforms
+from .graphs import average_transforms, pick_best_transform
 from .utils import (
     get_pointmap,
     depth_to_pointmap,
@@ -91,7 +92,7 @@ def estimate_scale_ransac(src_preds: Prediction, tgt_preds: Prediction) -> np.nd
     tgt_depth = tgt_depth[inliers_idcs]
     weights = weights[inliers_idcs]
 
-    return estimate_scale_wls_log(src_depth, tgt_depth, weights)
+    return estimate_scale_hubber_loss(src_depth, tgt_depth, weights)
 
 
 def estimate_scale_weighted_median(src_preds: Prediction, tgt_preds: Prediction) -> float:
@@ -131,10 +132,14 @@ def estimate_scale_from_depth_maps(
 
 
 def estimate_scale_from_extrinsics(
-    src_extrinsic: np.ndarray,
-    tgt_extrinsic: np.ndarray
+    src_preds: Prediction,
+    tgt_preds: Prediction
 ) -> float:
     #src_extrinsic.shape = (n, 3, 4) or (n, 4, 4)
+    src_preds, tgt_preds = get_shared_preds(src_preds, tgt_preds)
+    src_extrinsic = src_preds.extrinsic
+    tgt_extrinsic = tgt_preds.extrinsic
+
     if not src_extrinsic.shape == tgt_extrinsic.shape:
         raise ValueError(
             f"Input are of different shapes: {src_extrinsic.shape}, {tgt_extrinsic.shape}"
@@ -184,12 +189,37 @@ def estimate_scale(
         )
     elif len(src_preds.ids) > 1:
         s = estimate_scale_from_extrinsics(
-            src_preds.extrinsic,
-            tgt_preds.extrinsic
+            src_preds,
+            tgt_preds
         )
     else:
         raise RuntimeError("Unable to determine relative scale factor")
     return s
+
+
+def estimate_scale_from_intrinsics(
+    src_preds: Prediction,
+    tgt_preds: Prediction
+):
+    src_preds, tgt_preds = get_shared_preds(src_preds, tgt_preds)
+    candidates = [
+        0.5*(tgt_k[0,0]/src_k[0,0] + tgt_k[1,1]/src_k[1,1])
+        for src_k, tgt_k in zip(src_preds.intrinsic, tgt_preds.intrinsic)
+    ]
+    return np.median(candidates)
+
+
+class EstimateScaleAnchorIntrinsic:
+    def __init__(self, anchor_intrinsic):
+        self.ref_fx = anchor_intrinsic[0, 0]
+        self.ref_fy = anchor_intrinsic[1, 1]
+
+    def __call__(self, predS: Prediction) -> float:
+        candidates = [
+            0.5*(self.ref_fx/k[0,0] + self.ref_fy/k[1,1])
+            for k in predS.intrinsic
+        ]
+        return np.median(candidates)
 
 
 def vggtlong_est_scenes_transform(
@@ -205,10 +235,7 @@ def vggtlong_est_scenes_transform(
     src_point = src_point[common_mask]
     tgt_point = tgt_point[common_mask]
 
-    initial_weights = np.min(
-        np.vstack((src_preds.depth_conf[common_mask], tgt_preds.depth_conf[common_mask])),
-        axis=0
-    )
+    initial_weights = merge_depth_conf_mult(src_preds, tgt_preds)[common_mask]
     s, R, t = vggt_long.robust_weighted_estimate_sim3(
         src_point,
         tgt_point,
@@ -226,28 +253,38 @@ def vggtlong_est_scenes_transform(
 def estimate_sim3_from_extrinsics(
     src_preds: Prediction,
     tgt_preds: Prediction,
+    s_estimation: Callable=None
 ) -> mt.Sim3:
     src_preds, tgt_preds = get_shared_preds(src_preds, tgt_preds)
-    s = estimate_scale(src_preds, tgt_preds)
+    if s_estimation is None:
+        s = estimate_scale_from_intrinsics(src_preds, tgt_preds)
+    else:
+        s = s_estimation(src_preds, tgt_preds)
     src_extrinsic = extr_to_homogeneous(src_preds.extrinsic)
     tgt_extrinsic = extr_to_homogeneous(tgt_preds.extrinsic)
-    view_sim3_mat = np.linalg.inv(tgt_extrinsic) @ (s * src_extrinsic)
+    S = np.eye(4, dtype=tgt_extrinsic.dtype)
+    S[:3, :3] *= s
+    view_sim3_mat = np.linalg.inv(tgt_extrinsic) @ S @ src_extrinsic
     if len(view_sim3_mat) == 1:
         return view_sim3_mat[0]
 
     sim3_estimates = [mt.Sim3(mat) for mat in view_sim3_mat]
     #Future average all estimations
-    return sim3_estimates[0]
+    return pick_best_transform(sim3_estimates)
 
 
 def estimate_affine_from_extrinsics(
     src_preds: Prediction,
-    tgt_preds: Prediction
+    tgt_preds: Prediction,
+    s_estimation: Callable=None
 ) -> mt.Affine|mt.Homography:
     src_preds, tgt_preds = get_shared_preds(src_preds, tgt_preds)
     assert list(src_preds.ids) == list(tgt_preds.ids)
 
-    s = estimate_scale_ransac(src_preds, tgt_preds)
+    if s_estimation is None:
+        s = estimate_scale_from_intrinsics(src_preds, tgt_preds)
+    else:
+        s = s_estimation(src_preds, tgt_preds)
     shared_idx = np.random.randint(len(src_preds.depth))
 
     tgt_extrinsic = extr_to_homogeneous(tgt_preds.extrinsic)
@@ -258,10 +295,13 @@ def estimate_affine_from_extrinsics(
 
     A = np.zeros_like(tgt_extrinsic)
     A[..., 3, 3] = 1.0
-    A[..., :3, :3] = s * np.linalg.inv(tgt_intrinsic) @ src_intrinsic
+    A[..., :3, :3] = s * np.eye(3) #np.linalg.inv(tgt_intrinsic) @ src_intrinsic
     A = np.linalg.inv(tgt_extrinsic) @ A @ src_extrinsic
 
-    return average_transforms([mt.Affine(mat) for mat in A])
+    #return mt.Affine(A[shared_idx])
+    #return average_transforms([mt.Affine(mat) for mat in A])
+    #return mt.Affine(A[0])
+    return pick_best_transform([mt.Affine(mat) for mat in A])
 
 #TODO. estimate Homographies with VGGT-SLAM 1.0 method
 

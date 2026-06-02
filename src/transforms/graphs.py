@@ -288,6 +288,28 @@ class SL4Graph:
             OrderedDict(sorted(new_estimates.items()))
         )
 
+    def eval(self, estimations: Dict[hasattr, matt.Homography]) -> Dict[str, Any]:
+        values = gtsam.Values()
+        for i, est in estimations.items():
+            assert isinstance(est, matt.Homography) or (est, matt.Affine)
+            values.insert(self._ids_map[i], matt_homography_to_gtsam_sl4(est))
+        
+        error = self.graph.error(values)
+        marginals = gtsam.Marginals(self.graph, values)
+        
+        reversed_ids_map = {int_id: key for key, int_id in self._ids_map.items()}
+        
+        est_variances = OrderedDict()
+        for int_key, ext_id in reversed_ids_map.items():
+            pose_covariance = marginals.marginalCovariance(int_key)
+            est_var = np.diag(pose_covariance)
+            est_variances[ext_id] = est_var
+        
+        return {
+            'error': error,
+            'variances': OrderedDict(sorted(est_variances.items()))
+        }
+
 
 def average_transforms(transform_list: List[matt.Sim3]):
     if len(transform_list) == 1:
@@ -310,6 +332,36 @@ def average_transforms(transform_list: List[matt.Sim3]):
     _, estimates = graph.optimize(verbose=False)
 
     return estimates[1]
+
+
+def pick_best_transform(transform_list: List[matt.Sim3]):
+    if len(transform_list) == 1:
+        return transform_list[0]
+    
+    pose_type = matt.get_predominant_instance(*transform_list)
+
+    if isinstance(pose_type(), matt.Sim3):
+        graph_type = Sim3Graph
+    elif isinstance(pose_type(), matt.Affine) or isinstance(pose_type, matt.Homography):
+        graph_type = SL4Graph
+    else:
+        raise ValueError(f"Transformation type {pose_type} not supported")
+
+    min_error = 1e9
+    best = None
+    for i, transform in enumerate(transform_list):
+        graph = graph_type()
+        graph.add_anchor_prior(0)
+        graph.add_measurement(0, 1, transform)
+        pose_estimations = {
+            0: transform.__class__(),
+            1: transform
+        }
+        error = graph.eval(pose_estimations)['error']
+        if error < min_error:
+            min_error = error
+            best = transform
+    return best
     
 
 
