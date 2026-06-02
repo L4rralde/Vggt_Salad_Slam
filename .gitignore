@@ -17,3 +17,5 @@ preds
 *.db
 *.DS_Store
 *.log
+*.png
+*.json
