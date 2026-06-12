@@ -134,6 +134,25 @@ class Sim3(MatrixTransform):
 
         return self.__class__(inv_mat)
 
+    @property
+    def s(self) -> float:
+        rot_scale = self._matrix[:3, :3]
+        scale = np.linalg.det(rot_scale)**(1/3)
+        return scale
+        rot = rot_scale/scale
+        t = self._matrix[:3, 3]
+    
+    @property
+    def R(self) -> np.ndarray:
+        rot_scale = self._matrix[:3, :3]
+        scale = np.linalg.det(rot_scale)**(1/3)
+        rot = rot_scale/scale
+        return rot
+
+    @property
+    def t(self) -> np.ndarray:
+        return self._matrix[:3, 3]
+
     def transform_extrinsics(self, extr: np.ndarray) -> np.ndarray:
         sR = self._matrix[:3, :3]
         s = np.linalg.norm(sR[:, 0])
