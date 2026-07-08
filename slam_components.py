@@ -53,6 +53,10 @@ class LoopDetector:
     def __init__(self) -> None:
         self._descriptors_groups = []
         self._descriptors_groups_ids = []
+    
+    def append(self, descs: np.ndarray, descs_ids: List[int]) -> None:
+        self._descriptors_groups.append(descs)
+        self._descriptors_groups_ids.append(descs_ids)
 
     def __call__(self, descs: np.ndarray, descs_ids: List[int], min_similarity: float=0.75) -> Dict[str, tuple]:
         """
@@ -68,9 +72,8 @@ class LoopDetector:
                 max_sim = sim
                 max_idx = (i, *idcs)
         
-        self._descriptors_groups.append(descs)
-        self._descriptors_groups_ids.append(descs_ids)
-
+        self.append(descs, descs_ids)
+    
         if max_sim < min_similarity:
             return {}
         ref_group, ref_img, dst_img = max_idx
@@ -83,13 +86,16 @@ class LoopDetector:
     def match_desc_groups(descs_a: np.ndarray, descs_b: np.ndarray) -> tuple:
         sim_mat = descs_a @ descs_b.T
         max_sim = np.max(sim_mat)
-        row_idx, col_idx = np.unravel_index(max_sim, sim_mat.shape)
+        row_idx, col_idx = np.unravel_index(
+            np.argmax(sim_mat),
+            sim_mat.shape
+        )
         return (max_sim, (row_idx, col_idx))
 
 
 class PredsMemory:
     def __init__(self, namespace: str) -> None:
-        self._preds_cache: FIFOCache = FIFOCache(2)
+        self._preds_cache: FIFOCache = FIFOCache(128)
         self._preds_repo: NdarrayRepository = NdarrayRepository(f'output/{namespace}', clear=True)
         self.__total_preds = 0
     
@@ -106,7 +112,7 @@ class PredsMemory:
         self._preds_repo.append(pred_id, pred.asdict())
         self.__total_preds += 1
         
-        if self.__total_preds < 1:
+        if pred_id < 1:
             return ()
         return (
             self._preds_cache.get(pred_id - 1),
@@ -116,14 +122,14 @@ class PredsMemory:
     def get(self, pred_id: int) -> Prediction:
         if pred_id in self._preds_cache:
             return self._preds_cache.get(pred_id)
-        pred_dict = self._preds_repo.get(pred_id, copy=True)
+        pred_dict = self._preds_repo.get(pred_id, copy=True) #FIXME. np.array(None) is not recognized as None. Do not use ndarray repo
         return Prediction.from_dict(pred_dict)
 
 def get_kf_window(closed_loop_side, preds_memory):
     group_id, match_kf = closed_loop_side
     preds = preds_memory.get(group_id)
 
-    idx = preds.ids.index(match_kf)
+    idx = np.argmax(preds.ids == match_kf)
     start = max(0, idx - 1)
     end = min(len(preds.ids), idx + 2)
 
@@ -187,6 +193,7 @@ def main():
             continue
         
         #5. 3D reconstruction of submap and global descriptors
+        print(f"Processing group of images: {img_list}")
         view_preds = model.views_encoding([
             keyframes_memory.get(i) for i in img_list
         ]) #DINO tokens, processed images,, and global descriptors
@@ -197,27 +204,32 @@ def main():
         adjacent_preds = unaligned_preds_memory.append(preds) #Appends new preds. Returns {prev, new} if prev exists
 
         #5b. Store global descriptors
-        descs = view_preds.descriptors[-len(new_img_list):]
+        descs = view_preds.descriptors[-len(new_img_list):].numpy()
         descs_ids = new_img_list
         closed_loop = loop_detector(descs, descs_ids) #Appends global descriptors, but also returns 
 
+        prev_img_list = new_img_list
+        new_img_list = []
         if not adjacent_preds:
             continue
 
         #6 Local aligning
         prev_pred, curr_pred = adjacent_preds
         meas = vggtlong_est_scenes_transform(curr_pred, prev_pred)
-        child_id = len(unaligned_preds_memory)
+        child_id = len(unaligned_preds_memory) - 1
         parent_id = child_id - 1
         graph.add_measurement(parent_id, child_id, meas)
 
         if not closed_loop:
             continue
 
+        print("Found loop closure")
+        print(closed_loop)
         #7 Loop closure
         src_group_id, src_preds, src_kf_ids = get_kf_window(closed_loop['src'], unaligned_preds_memory)
         dst_group_id, dst_preds, dst_kf_ids = get_kf_window(closed_loop['dst'], unaligned_preds_memory)
-        connecting_kf_ids = np.concat([src_kf_ids, dst_kf_ids])
+
+        connecting_kf_ids = np.concatenate([src_kf_ids, dst_kf_ids])
         view_preds = model.views_encoding([
             keyframes_memory.get(i) 
             for i in connecting_kf_ids
@@ -240,9 +252,9 @@ def main():
             meas_dst_aux @ meas_aux_src
         )
 
-        graph.optimize()
+        graph.optimize(verbose=True)
 
-    _, new_est = graph.optimize()
+    _, new_est = graph.optimize(verbose=True)
     np.save(
         os.path.join('output', 'estimations.npy'),
         np.asarray([
