@@ -1,5 +1,6 @@
 from argparse import ArgumentParser
-from typing import List, Dict
+from typing import List, Dict, Tuple
+import os
 
 import numpy as np
 from PIL import Image
@@ -7,14 +8,19 @@ from PIL import Image
 from slam_utils import get_publisher, cv2_to_pil
 from src.keyframes.frame_overlap import FrameTracker
 from src.keyframes.bluriness import tenengrad
-from src.models import get_model
-from src.storage.fifo_cache import FIFOCache
-from src.storage.frames import FrameRepository
+from src.models import get_model, Prediction
+from src.storage import(
+    FIFOCache,
+    FrameRepository,
+    NdarrayRepository
+)
+from src.transforms.estimate import vggtlong_est_scenes_transform
+from src.transforms.graphs import Sim3Graph
 
 
 def parse_args():
     parser = ArgumentParser()
-    parser.add_argument('video-path')
+    parser.add_argument('video_path')
     parser.add_argument('--model', required=True, choices=('vggt', 'da3', 'mapanything'))
     parser.add_argument('--min_disparity', type=float, default=50, help="Minimum disparity to generate a new keyframe")
     parser.add_argument('--group-len', type=int, default=16)
@@ -22,7 +28,7 @@ def parse_args():
     return parser.parse_args()
 
 
-class FramesStorage:
+class FramesMemory:
     def __init__(self) -> None:
         self._ids_dict = {}
         self._cache = FIFOCache(max_size=32)
@@ -48,7 +54,11 @@ class LoopDetector:
         self._descriptors_groups = []
         self._descriptors_groups_ids = []
 
-    def __call__(self, descs: np.ndarray, descs_ids: List[int], **kwargs) -> Dict[str, tuple]:
+    def __call__(self, descs: np.ndarray, descs_ids: List[int], min_similarity: float=0.75) -> Dict[str, tuple]:
+        """
+        Appends descriptors of new group of imgaes.
+        And matches another group finding most similar pair of images.
+        """
         dst_group = len(self._descriptors_groups)
         max_sim = -1
         max_idx = None
@@ -61,7 +71,7 @@ class LoopDetector:
         self._descriptors_groups.append(descs)
         self._descriptors_groups_ids.append(descs_ids)
 
-        if max_sim < kwargs.get('min_similarity', 0.75):
+        if max_sim < min_similarity:
             return {}
         ref_group, ref_img, dst_img = max_idx
         return {
@@ -77,6 +87,48 @@ class LoopDetector:
         return (max_sim, (row_idx, col_idx))
 
 
+class PredsMemory:
+    def __init__(self, namespace: str) -> None:
+        self._preds_cache: FIFOCache = FIFOCache(2)
+        self._preds_repo: NdarrayRepository = NdarrayRepository(f'output/{namespace}', clear=True)
+        self.__total_preds = 0
+    
+    def __len__(self) -> int:
+        return self.__total_preds
+
+    def append(self, pred: Prediction) -> Tuple[Prediction, Prediction]:
+        """
+        Appends newest prediction and returns (prev, new) if prev exit
+        """
+        pred_id = self.__total_preds 
+
+        self._preds_cache.append(pred_id, pred)
+        self._preds_repo.append(pred_id, pred.asdict())
+        self.__total_preds += 1
+        
+        if self.__total_preds < 1:
+            return ()
+        return (
+            self._preds_cache.get(pred_id - 1),
+            pred
+        )
+
+    def get(self, pred_id: int) -> Prediction:
+        if pred_id in self._preds_cache:
+            return self._preds_cache.get(pred_id)
+        pred_dict = self._preds_repo.get(pred_id, copy=True)
+        return Prediction.from_dict(pred_dict)
+
+def get_kf_window(closed_loop_side, preds_memory):
+    group_id, match_kf = closed_loop_side
+    preds = preds_memory.get(group_id)
+
+    idx = preds.ids.index(match_kf)
+    start = max(0, idx - 1)
+    end = min(len(preds.ids), idx + 2)
+
+    return group_id, preds, preds.ids[start:end]
+
 
 def main():
     args = parse_args()
@@ -90,18 +142,19 @@ def main():
     elif args.model == 'mapanything':
         model = get_model('mapanything', VPR_REPO)
 
-    keyframes_memory = FramesStorage() #Fast access to 
+    keyframes_memory = FramesMemory() #Fast access to 
     video_path = args.video_path
     video = get_publisher(video_path)
+    unaligned_preds_memory = PredsMemory('unaligned_preds')
     
     video_tracker = FrameTracker() #KeyFrame detector
     loop_detector = LoopDetector()
+    graph = Sim3Graph()
+    graph.add_anchor_prior(0)
 
     num_total_imgs = 0
     num_selected_imgs = 0
 
-    preds_cnt = 0
-    preds_cache = FIFOCache(2)
     prev_img_list = []
     new_img_list = []
     while True:
@@ -123,7 +176,7 @@ def main():
             continue
         num_selected_imgs += 1
 
-        #3 Convert to PIL Image
+        #3 Convert to PIL Images
         frame = cv2_to_pil(frame)
         keyframes_memory.append(frame, num_total_imgs, num_selected_imgs)
         
@@ -133,19 +186,69 @@ def main():
         if len(img_list) < args.group_len:
             continue
         
-        #5. 3D reconstruction of submap and global description
+        #5. 3D reconstruction of submap and global descriptors
         view_preds = model.views_encoding([
             keyframes_memory.get(i) for i in img_list
-        ])
-        preds = model.chunk_prediction(view_preds)
-        preds.ids = np.asarray(img_list)
+        ]) #DINO tokens, processed images,, and global descriptors
+        preds = model.chunk_prediction(view_preds) #3D reconstruction and camera properties
+        preds.ids = np.asarray(img_list) #Per-image identifies
 
+        #5a. Store Prediction output
+        adjacent_preds = unaligned_preds_memory.append(preds) #Appends new preds. Returns {prev, new} if prev exists
+
+        #5b. Store global descriptors
         descs = view_preds.descriptors[-len(new_img_list):]
         descs_ids = new_img_list
+        closed_loop = loop_detector(descs, descs_ids) #Appends global descriptors, but also returns 
 
-        loop_info = loop_detector(descs, descs_ids)
-        
+        if not adjacent_preds:
+            continue
 
+        #6 Local aligning
+        prev_pred, curr_pred = adjacent_preds
+        meas = vggtlong_est_scenes_transform(curr_pred, prev_pred)
+        child_id = len(unaligned_preds_memory)
+        parent_id = child_id - 1
+        graph.add_measurement(parent_id, child_id, meas)
+
+        if not closed_loop:
+            continue
+
+        #7 Loop closure
+        src_group_id, src_preds, src_kf_ids = get_kf_window(closed_loop['src'], unaligned_preds_memory)
+        dst_group_id, dst_preds, dst_kf_ids = get_kf_window(closed_loop['dst'], unaligned_preds_memory)
+        connecting_kf_ids = np.concat([src_kf_ids, dst_kf_ids])
+        view_preds = model.views_encoding([
+            keyframes_memory.get(i) 
+            for i in connecting_kf_ids
+        ])
+        aux_preds = model.chunk_prediction(view_preds)
+        aux_preds.ids = connecting_kf_ids
+
+        #FIXME. By the moment we are not going to store this preds becuase it
+        #makes the numbering differ (from closed-loop detector to memory). Nonethelles,
+        #Graph will be aware of it.
+        meas_dst_aux = vggtlong_est_scenes_transform(
+            aux_preds, dst_preds
+        )
+        meas_aux_src = vggtlong_est_scenes_transform(
+            src_preds, aux_preds
+        )
+        graph.add_measurement(
+            dst_group_id, 
+            src_group_id, 
+            meas_dst_aux @ meas_aux_src
+        )
+
+        graph.optimize()
+
+    _, new_est = graph.optimize()
+    np.save(
+        os.path.join('output', 'estimations.npy'),
+        np.asarray([
+            est._matrix for est in new_est.values()]
+        )
+    )
 
 if __name__ == '__main__':
     main()
