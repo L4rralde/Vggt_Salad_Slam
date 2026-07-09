@@ -14,8 +14,12 @@ from src.storage import(
     FrameRepository,
     NdarrayRepository
 )
-from src.transforms.estimate import vggtlong_est_scenes_transform
-from src.transforms.graphs import Sim3Graph
+from src.transforms.estimate import(
+    vggtlong_est_scenes_transform,
+    estimate_affine_from_extrinsics
+)
+from src.transforms.matransforms import Homography
+from src.transforms.graphs import Sim3Graph, SL4Graph
 from src.transforms.utils import to_pointcloud
 
 
@@ -149,6 +153,15 @@ def get_kf_window(closed_loop_side, preds_memory):
     return group_id, preds, preds.ids[start:end]
 
 
+def local_align(src_preds: Prediction, tgt_preds: Prediction):
+    return Homography(
+        vggtlong_est_scenes_transform(
+            src_preds,
+            tgt_preds
+        )
+    )
+
+
 def main():
     args = parse_args()
 
@@ -168,7 +181,7 @@ def main():
     
     video_tracker = FrameTracker() #KeyFrame detector
     loop_detector = LoopDetector()
-    graph = Sim3Graph()
+    graph = SL4Graph()
     graph.add_anchor_prior(0)
 
     num_total_imgs = 0
@@ -179,34 +192,45 @@ def main():
     while True:
         #1. Get frames
         frame = video.read()
-        if frame is None:
-            break
-        num_total_imgs += 1
-        
-        #FUTURE. Do something with this.
-        #tenengrad(frame)
+        finished = frame is None
+        if not finished:
+            num_total_imgs += 1
+            
+            #FUTURE. Do something with this.
+            #tenengrad(frame)
 
-        #2. Filter keyframes
-        enough_disparity = video_tracker.compute_disparity(
-            frame,
-            args.min_disparity
-        )
-        if not enough_disparity:
-            continue
-        num_selected_imgs += 1
+            #2. Filter keyframes
+            enough_disparity = video_tracker.compute_disparity(
+                frame,
+                args.min_disparity
+            )
+            if not enough_disparity:
+                continue
+            num_selected_imgs += 1
 
-        #3 Convert to PIL Images
-        frame = cv2_to_pil(frame)
-        keyframes_memory.append(frame, num_total_imgs, num_selected_imgs)
+            #3 Convert to PIL Images
+            frame = cv2_to_pil(frame)
+            keyframes_memory.append(frame, num_total_imgs, num_selected_imgs)
+            
+            #4 Stack images to list of images
+            new_img_list.append(num_total_imgs)
         
-        #4 Stack images to list of images
-        new_img_list.append(num_total_imgs)
         img_list = prev_img_list[-args.num_overlap:] + new_img_list
-        if len(img_list) < args.group_len:
+        is_batch_full = len(img_list) >= args.group_len
+        has_leftovers = finished and len(new_img_list) > 0
+        if not (is_batch_full or has_leftovers):
+            if finished:
+                break
             continue
+
+
         
         #5. 3D reconstruction of submap and global descriptors
-        print(f"Processing group of images: {img_list}")
+        if has_leftovers:
+            print(f"Flushing remaining leftover images: {img_list}")
+        else:
+            print(f"Processing group of images: {img_list}")
+        
         view_preds = model.views_encoding([
             keyframes_memory.get(i) for i in img_list
         ]) #DINO tokens, processed images,, and global descriptors
@@ -221,53 +245,59 @@ def main():
         descs_ids = new_img_list
         closed_loop = loop_detector(descs, descs_ids) #Appends global descriptors, but also returns 
 
+        # Reset lists for the next iteration
         prev_img_list = new_img_list
         new_img_list = []
+
         if not adjacent_preds:
+            if finished:
+                break
             continue
 
         #6 Local aligning
         prev_pred, curr_pred = adjacent_preds
-        meas = vggtlong_est_scenes_transform(curr_pred, prev_pred)
+        meas = local_align(curr_pred, prev_pred)
         child_id = len(unaligned_preds_memory) - 1
         parent_id = child_id - 1
         graph.add_measurement(parent_id, child_id, meas)
 
-        if not closed_loop:
-            continue
+        if closed_loop:
+            print("Found loop closure")
+            print(closed_loop)
+            #7 Loop closure
+            src_group_id, src_preds, src_kf_ids = get_kf_window(closed_loop['src'], unaligned_preds_memory)
+            dst_group_id, dst_preds, dst_kf_ids = get_kf_window(closed_loop['dst'], unaligned_preds_memory)
 
-        print("Found loop closure")
-        print(closed_loop)
-        #7 Loop closure
-        src_group_id, src_preds, src_kf_ids = get_kf_window(closed_loop['src'], unaligned_preds_memory)
-        dst_group_id, dst_preds, dst_kf_ids = get_kf_window(closed_loop['dst'], unaligned_preds_memory)
+            connecting_kf_ids = np.concatenate([src_kf_ids, dst_kf_ids])
+            view_preds = model.views_encoding([
+                keyframes_memory.get(i) 
+                for i in connecting_kf_ids
+            ])
+            aux_preds = model.chunk_prediction(view_preds)
+            aux_preds.ids = connecting_kf_ids
 
-        connecting_kf_ids = np.concatenate([src_kf_ids, dst_kf_ids])
-        view_preds = model.views_encoding([
-            keyframes_memory.get(i) 
-            for i in connecting_kf_ids
-        ])
-        aux_preds = model.chunk_prediction(view_preds)
-        aux_preds.ids = connecting_kf_ids
+            #FIXME. By the moment we are not going to store this preds becuase it
+            #makes the numbering differ (from closed-loop detector to memory). Nonethelles,
+            #Graph will be aware of it.
+            meas_dst_aux = local_align(
+                aux_preds, dst_preds
+            )
+            meas_aux_src = local_align(
+                src_preds, aux_preds
+            )
+            graph.add_measurement(
+                dst_group_id, 
+                src_group_id, 
+                meas_dst_aux @ meas_aux_src
+            )
 
-        #FIXME. By the moment we are not going to store this preds becuase it
-        #makes the numbering differ (from closed-loop detector to memory). Nonethelles,
-        #Graph will be aware of it.
-        meas_dst_aux = vggtlong_est_scenes_transform(
-            aux_preds, dst_preds
-        )
-        meas_aux_src = vggtlong_est_scenes_transform(
-            src_preds, aux_preds
-        )
-        graph.add_measurement(
-            dst_group_id, 
-            src_group_id, 
-            meas_dst_aux @ meas_aux_src
-        )
+            _, new_est = graph.optimize(verbose=True)
+            graph.update_estimation(new_est)
+        
+        if finished:
+            break
 
-        _, new_est = graph.optimize(verbose=True)
-        graph.update_estimation(new_est)
-
+    _, new_est = graph.optimize(verbose=True)
     np.save(
         os.path.join('output', 'estimations.npy'),
         np.asarray([
