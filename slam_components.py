@@ -16,15 +16,17 @@ from src.storage import(
 )
 from src.transforms.estimate import vggtlong_est_scenes_transform
 from src.transforms.graphs import Sim3Graph
+from src.transforms.utils import to_pointcloud
 
 
 def parse_args():
     parser = ArgumentParser()
     parser.add_argument('video_path')
     parser.add_argument('--model', required=True, choices=('vggt', 'da3', 'mapanything'))
-    parser.add_argument('--min_disparity', type=float, default=50, help="Minimum disparity to generate a new keyframe")
+    parser.add_argument('--min_disparity', type=float, default=20, help="Minimum disparity to generate a new keyframe")
     parser.add_argument('--group-len', type=int, default=16)
     parser.add_argument('--num-overlap', type=int, default=2)
+    parser.add_argument('--viz', action='store_true')
     return parser.parse_args()
 
 
@@ -58,7 +60,7 @@ class LoopDetector:
         self._descriptors_groups.append(descs)
         self._descriptors_groups_ids.append(descs_ids)
 
-    def __call__(self, descs: np.ndarray, descs_ids: List[int], min_similarity: float=0.75) -> Dict[str, tuple]:
+    def __call__(self, descs: np.ndarray, descs_ids: List[int], min_similarity: float=0.8) -> Dict[str, tuple]:
         """
         Appends descriptors of new group of imgaes.
         And matches another group finding most similar pair of images.
@@ -74,12 +76,15 @@ class LoopDetector:
         
         self.append(descs, descs_ids)
     
+        
         if max_sim < min_similarity:
+            print(f"Max sim is not enough: {max_sim}")
             return {}
         ref_group, ref_img, dst_img = max_idx
         return {
             'src': (ref_group, self._descriptors_groups_ids[ref_group][ref_img]),
-            'dst': (dst_group, descs_ids[dst_img])
+            'dst': (dst_group, descs_ids[dst_img]),
+            'sim': max_sim
         }
 
     @staticmethod
@@ -95,13 +100,17 @@ class LoopDetector:
 
 class PredsMemory:
     def __init__(self, namespace: str) -> None:
-        self._preds_cache: FIFOCache = FIFOCache(128)
-        self._preds_repo: NdarrayRepository = NdarrayRepository(f'output/{namespace}', clear=True)
+        self.root = os.path.join('output', namespace)
+        self._preds_paths: Dict[int, str] = {}
+        self._preds_cache: FIFOCache = FIFOCache(4)
         self.__total_preds = 0
     
     def __len__(self) -> int:
         return self.__total_preds
-
+    
+    def get_path(self, pred_id: int) -> str:
+        return os.path.join(self.root, f'{pred_id}.npz')
+    
     def append(self, pred: Prediction) -> Tuple[Prediction, Prediction]:
         """
         Appends newest prediction and returns (prev, new) if prev exit
@@ -109,7 +118,10 @@ class PredsMemory:
         pred_id = self.__total_preds 
 
         self._preds_cache.append(pred_id, pred)
-        self._preds_repo.append(pred_id, pred.asdict())
+        npz_path = self.get_path(pred_id)
+        self._preds_paths[pred_id] = npz_path
+        np.savez(npz_path, **pred.asdict())
+
         self.__total_preds += 1
         
         if pred_id < 1:
@@ -122,8 +134,9 @@ class PredsMemory:
     def get(self, pred_id: int) -> Prediction:
         if pred_id in self._preds_cache:
             return self._preds_cache.get(pred_id)
-        pred_dict = self._preds_repo.get(pred_id, copy=True) #FIXME. np.array(None) is not recognized as None. Do not use ndarray repo
-        return Prediction.from_dict(pred_dict)
+        npz_path = self.get_path(pred_id)
+        return Prediction.from_npz_file(npz_path)
+
 
 def get_kf_window(closed_loop_side, preds_memory):
     group_id, match_kf = closed_loop_side
@@ -252,15 +265,27 @@ def main():
             meas_dst_aux @ meas_aux_src
         )
 
-        graph.optimize(verbose=True)
+        _, new_est = graph.optimize(verbose=True)
+        graph.update_estimation(new_est)
 
-    _, new_est = graph.optimize(verbose=True)
     np.save(
         os.path.join('output', 'estimations.npy'),
         np.asarray([
             est._matrix for est in new_est.values()]
         )
     )
+
+    if args.viz:
+        import open3d as o3d
+        pcds = [
+            to_pointcloud(
+                list(new_est.values())[i](unaligned_preds_memory.get(i)),
+                lower_p=60,
+                min_conf=1.05
+            )
+            for i in range(len(unaligned_preds_memory))
+        ]
+        o3d.visualization.draw_geometries(pcds)
 
 if __name__ == '__main__':
     main()
