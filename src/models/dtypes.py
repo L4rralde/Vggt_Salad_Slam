@@ -52,7 +52,6 @@ class Prediction:
             if v.size == 1 and v.item() == None
         ]
 
-        print
         for drop_k in to_drop:
             d.pop(drop_k)
 
