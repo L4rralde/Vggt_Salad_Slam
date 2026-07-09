@@ -120,6 +120,32 @@ class Sim3(MatrixTransform):
         self._matrix = np.eye(4, dtype=matrix.dtype)
         self._matrix[:3] = matrix[:3]
     
+    def __repr__(self):
+        M = self._matrix
+
+        # Translation
+        t = M[:3, 3]
+
+        # sR block
+        sR = M[:3, :3]
+
+        # Uniform scale (assuming R is orthonormal)
+        s = np.cbrt(np.linalg.det(sR))
+
+        # Recover rotation
+        if np.isclose(s, 0):
+            R = np.full((3, 3), np.nan)
+        else:
+            R = sR / s
+
+        return (
+            f"{self.__class__.__name__}(\n"
+            f"  s = {s:.6g},\n"
+            f"  R =\n{np.array2string(R, precision=4, suppress_small=True)},\n"
+            f"  t = {np.array2string(t, precision=4, suppress_small=True)}\n"
+            f")"
+        )
+    
     def inv(self) -> "Sim3":
         rot_scale = self._matrix[:3, :3]
         scale = np.linalg.det(rot_scale)**(1/3)
