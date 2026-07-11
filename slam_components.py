@@ -1,9 +1,13 @@
 from argparse import ArgumentParser
-from typing import List, Dict, Tuple
+from typing import (
+    List, Dict, Tuple, Callable, Hashable
+)
 import os
 
 import numpy as np
 from PIL import Image
+import open3d as o3d
+from tqdm import tqdm
 
 from slam_utils import get_publisher, cv2_to_pil
 from src.keyframes.frame_overlap import FrameTracker
@@ -18,7 +22,7 @@ from src.transforms.estimate import(
     vggtlong_est_scenes_transform,
     estimate_affine_from_extrinsics
 )
-from src.transforms.matransforms import Homography
+from src.transforms.matransforms import Homography, MatrixTransform
 from src.transforms.graphs import Sim3Graph, SL4Graph
 from src.transforms.utils import to_pointcloud
 
@@ -26,8 +30,9 @@ from src.transforms.utils import to_pointcloud
 def parse_args():
     parser = ArgumentParser()
     parser.add_argument('video_path')
-    parser.add_argument('--model', required=True, choices=('vggt', 'da3', 'mapanything'))
-    parser.add_argument('--min_disparity', type=float, default=20, help="Minimum disparity to generate a new keyframe")
+    parser.add_argument('out_dir')
+    parser.add_argument('--model', required=True, default='vggt', choices=('vggt', 'da3', 'mapanything'))
+    parser.add_argument('--min-disparity', type=float, default=20, help="Minimum disparity to generate a new keyframe")
     parser.add_argument('--group-len', type=int, default=16)
     parser.add_argument('--num-overlap', type=int, default=2)
     parser.add_argument('--viz', action='store_true')
@@ -35,10 +40,10 @@ def parse_args():
 
 
 class FramesMemory:
-    def __init__(self) -> None:
+    def __init__(self, output_dir: str) -> None:
         self._ids_dict = {}
         self._cache = FIFOCache(max_size=32)
-        self._repo = FrameRepository('output/.tmp/frames', clear=True)
+        self._repo = FrameRepository(output_dir, clear=True)
     
     def append(self, frame: Image.Image, img_cnt: int, sel_img_cnt: int) -> None:
         self._ids_dict[img_cnt] = sel_img_cnt
@@ -103,12 +108,19 @@ class LoopDetector:
 
 
 class PredsMemory:
-    def __init__(self, namespace: str) -> None:
-        self.root = os.path.join('output', namespace)
+    def __init__(self, output_dir: str) -> None:
+        self.root = output_dir
+        self.create_root_dir()
         self._preds_paths: Dict[int, str] = {}
         self._preds_cache: FIFOCache = FIFOCache(4)
         self.__total_preds = 0
     
+    def create_root_dir(self) -> None:
+        import shutil
+        if os.path.exists(self.root):
+            shutil.rmtree(self.root)
+        os.makedirs(self.root)
+
     def __len__(self) -> int:
         return self.__total_preds
     
@@ -153,13 +165,50 @@ def get_kf_window(closed_loop_side, preds_memory):
     return group_id, preds, preds.ids[start:end]
 
 
-def local_align(src_preds: Prediction, tgt_preds: Prediction):
-    return Homography(
-        vggtlong_est_scenes_transform(
-            src_preds,
-            tgt_preds
-        )
+def compute_closed_looop_constraint(
+    closed_loop: Dict,
+    unaligned_preds_memory: PredsMemory,
+    model: object,
+    keyframes_memory: FramesMemory,
+    local_align: Callable
+) -> Tuple[Hashable, Hashable, MatrixTransform]:
+    """
+    Given a detected closed loop with the 'closed_loop' dictionary,
+    it computes the closed-loop constraint and returns:
+    ('child_id', 'parent_id', 'parent->child mat transform')
+    """
+    src_group_id, src_preds, src_kf_ids = get_kf_window(closed_loop['src'], unaligned_preds_memory)
+    dst_group_id, dst_preds, dst_kf_ids = get_kf_window(closed_loop['dst'], unaligned_preds_memory)
+
+    #7.1 Construct connecting submap
+    connecting_kf_ids = np.concatenate([src_kf_ids, dst_kf_ids])
+    view_preds = model.views_encoding([
+        keyframes_memory.get(i) 
+        for i in connecting_kf_ids
+    ])
+    aux_preds = model.chunk_prediction(view_preds) 
+    aux_preds.ids = connecting_kf_ids
+
+    #FIXME. By the moment we are not going to store this preds becuase it
+    #makes the numbering differ (from closed-loop detector to memory).
+    #Nonetheless it works because the restrictions is added thouhg.
+
+    #7.2 Computing closed-loop measurment a.k.a. as restriction
+    meas_dst_aux = local_align(
+        aux_preds, dst_preds
     )
+    meas_aux_src = local_align(
+        src_preds, aux_preds
+    )
+
+    return (src_group_id, dst_group_id, meas_dst_aux @ meas_aux_src)
+
+
+def local_align(src_preds: Prediction, tgt_preds: Prediction):
+    return Homography(vggtlong_est_scenes_transform(
+        src_preds,
+        tgt_preds
+    ))
 
 
 def main():
@@ -174,11 +223,13 @@ def main():
     elif args.model == 'mapanything':
         model = get_model('mapanything', VPR_REPO)
 
-    keyframes_memory = FramesMemory() #Fast access to 
-    video_path = args.video_path
-    video = get_publisher(video_path)
-    unaligned_preds_memory = PredsMemory('unaligned_preds')
-    
+    keyframes_memory = FramesMemory(
+        os.path.join(args.out_dir, 'keyframes')
+    ) #Fast access to keyframes
+    video = get_publisher(args.video_path)
+    unaligned_preds_memory = PredsMemory(
+        os.path.join(args.out_dir,'unaligned_preds')
+    )
     video_tracker = FrameTracker() #KeyFrame detector
     loop_detector = LoopDetector()
     graph = SL4Graph()
@@ -223,8 +274,6 @@ def main():
                 break
             continue
 
-
-        
         #5. 3D reconstruction of submap and global descriptors
         if has_leftovers:
             print(f"Flushing remaining leftover images: {img_list}")
@@ -265,30 +314,17 @@ def main():
             print("Found loop closure")
             print(closed_loop)
             #7 Loop closure
-            src_group_id, src_preds, src_kf_ids = get_kf_window(closed_loop['src'], unaligned_preds_memory)
-            dst_group_id, dst_preds, dst_kf_ids = get_kf_window(closed_loop['dst'], unaligned_preds_memory)
-
-            connecting_kf_ids = np.concatenate([src_kf_ids, dst_kf_ids])
-            view_preds = model.views_encoding([
-                keyframes_memory.get(i) 
-                for i in connecting_kf_ids
-            ])
-            aux_preds = model.chunk_prediction(view_preds)
-            aux_preds.ids = connecting_kf_ids
-
-            #FIXME. By the moment we are not going to store this preds becuase it
-            #makes the numbering differ (from closed-loop detector to memory). Nonethelles,
-            #Graph will be aware of it.
-            meas_dst_aux = local_align(
-                aux_preds, dst_preds
-            )
-            meas_aux_src = local_align(
-                src_preds, aux_preds
+            src_group_id, dst_group_id, constraint = compute_closed_looop_constraint(
+                closed_loop,
+                unaligned_preds_memory,
+                model,
+                keyframes_memory,
+                local_align
             )
             graph.add_measurement(
                 dst_group_id, 
                 src_group_id, 
-                meas_dst_aux @ meas_aux_src
+                constraint
             )
 
             _, new_est = graph.optimize(verbose=True)
@@ -298,24 +334,44 @@ def main():
             break
 
     _, new_est = graph.optimize(verbose=True)
+    print("Finished online reconstruction")
+    print("Starting file handling and other stuff alike")
+
+    print("Saving predictions")
     np.save(
-        os.path.join('output', 'estimations.npy'),
+        os.path.join(args.out_dir, 'estimations.npy'),
         np.asarray([
             est._matrix for est in new_est.values()]
         )
     )
 
+    var = graph.eval(new_est)['variances']
+    np.save(
+        os.path.join(args.out_dir, 'vars.npy'),
+        np.asarray([
+            var_matr for var_matr in var.values()]
+        )
+    )
+
+    print("Generating point clouds. Be patient")
+    merged_pcds = o3d.geometry.PointCloud()
+    for i in tqdm(range(len(unaligned_preds_memory))):
+        pcd = to_pointcloud(
+            list(new_est.values())[i](unaligned_preds_memory.get(i)),
+            lower_p=60,
+            min_conf=1.05
+        )
+        merged_pcds += pcd
+
+
+    o3d.io.write_point_cloud(
+        os.path.join(args.out_dir, 'pointcloud.pcd'),
+        merged_pcds
+    )
+
     if args.viz:
-        import open3d as o3d
-        pcds = [
-            to_pointcloud(
-                list(new_est.values())[i](unaligned_preds_memory.get(i)),
-                lower_p=60,
-                min_conf=1.05
-            )
-            for i in range(len(unaligned_preds_memory))
-        ]
-        o3d.visualization.draw_geometries(pcds)
+        o3d.visualization.draw_geometries([merged_pcds])
+
 
 if __name__ == '__main__':
     main()
