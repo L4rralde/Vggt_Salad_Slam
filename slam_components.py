@@ -35,6 +35,7 @@ def parse_args():
     parser.add_argument('--min-disparity', type=float, default=20, help="Minimum disparity to generate a new keyframe")
     parser.add_argument('--group-len', type=int, default=16)
     parser.add_argument('--num-overlap', type=int, default=2)
+    parser.add_argument('--min-similarity', type=float, default=0.9)
     parser.add_argument('--viz', action='store_true')
     return parser.parse_args()
 
@@ -69,7 +70,7 @@ class LoopDetector:
         self._descriptors_groups.append(descs)
         self._descriptors_groups_ids.append(descs_ids)
 
-    def __call__(self, descs: np.ndarray, descs_ids: List[int], min_similarity: float=0.8) -> Dict[str, tuple]:
+    def __call__(self, descs: np.ndarray, descs_ids: List[int], min_similarity: float=0.9) -> Dict[str, tuple]:
         """
         Appends descriptors of new group of imgaes.
         And matches another group finding most similar pair of images.
@@ -205,10 +206,10 @@ def compute_closed_looop_constraint(
 
 
 def local_align(src_preds: Prediction, tgt_preds: Prediction):
-    return Homography(vggtlong_est_scenes_transform(
+    return vggtlong_est_scenes_transform(
         src_preds,
         tgt_preds
-    ))
+    )
 
 
 def main():
@@ -232,7 +233,7 @@ def main():
     )
     video_tracker = FrameTracker() #KeyFrame detector
     loop_detector = LoopDetector()
-    graph = SL4Graph()
+    graph = Sim3Graph()
     graph.add_anchor_prior(0)
 
     num_total_imgs = 0
@@ -292,7 +293,7 @@ def main():
         #5b. Store global descriptors
         descs = view_preds.descriptors[-len(new_img_list):].numpy()
         descs_ids = new_img_list
-        closed_loop = loop_detector(descs, descs_ids) #Appends global descriptors, but also returns 
+        closed_loop = loop_detector(descs, descs_ids, min_similarity=args.min_similarity) #Appends global descriptors, but also returns 
 
         # Reset lists for the next iteration
         prev_img_list = new_img_list
