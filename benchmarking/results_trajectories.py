@@ -15,10 +15,54 @@ def parse_args():
     return parser.parse_args()
 
 
-def get_preds_id_from_pred_path(pred_path: str) -> int:
-    bname = os.path.basename(pred_path)
-    pred_id, _ = os.path.splitext(bname)
-    return int(pred_id)
+def extrinsics_to_poses(extrinsics: np.ndarray) -> np.ndarray:
+    if extrinsics.ndim != 3 or extrinsics.shape[1:] != (3, 4):
+        raise ValueError("Expected input shape (N, 3, 4).")
+
+    R = extrinsics[:, :, :3]          # (N, 3, 3)
+    t = extrinsics[:, :, 3:]          # (N, 3, 1)
+
+    R_inv = np.transpose(R, (0, 2, 1))
+    t_inv = -R_inv @ t
+
+    poses = np.concatenate([R_inv, t_inv], axis=2)
+    return poses
+
+
+def transform_points(T: np.ndarray, points: np.ndarray) -> np.ndarray:
+    """
+    Apply a 4x4 homogeneous transformation to an array of 3D points.
+
+    Parameters
+    ----------
+    T : (4, 4) ndarray
+        Homogeneous transformation matrix.
+    points : (n, 3) ndarray
+        3D points.
+
+    Returns
+    -------
+    transformed_points : (n, 3) ndarray
+        Transformed 3D points.
+    """
+    points = np.asarray(points)
+    T = np.asarray(T)
+
+    if T.shape != (4, 4):
+        raise ValueError("T must be a 4x4 matrix.")
+    if points.ndim != 2 or points.shape[1] != 3:
+        raise ValueError("points must have shape (n, 3).")
+
+    # Convert to homogeneous coordinates
+    homogeneous = np.hstack((points, np.ones((points.shape[0], 1))))
+
+    # Apply transformation
+    transformed = (T @ homogeneous.T).T
+
+    # Convert back to Cartesian coordinates
+    transformed /= transformed[:, 3][:, np.newaxis]
+
+    return transformed[:, :3]
 
 
 def main():
@@ -45,9 +89,8 @@ def main():
     view_origin = {}
     for pred, est, trace in zip(all_preds, estimations, cov_traces):
         extrs = pred.extrinsic
-        R_T = extrs[:, :3, :3].transpose(0, 2, 1)
-        t = extrs[:, :3, 2:3]
-        origins = np.squeeze(-R_T @ t, axis=-1)
+        poses = extrinsics_to_poses(extrs)
+        origins = poses[:, :3, 3]
         
         for opt_center, cam_id in zip(origins, pred.ids):
             if not cam_id in view_origin: #First estimation
@@ -69,7 +112,7 @@ def main():
     for cam_id in view_origin.keys():
         est = view_origin[cam_id]['est']
         center = view_origin[cam_id]['center']
-        coord = est[:3, :3] @ center + est[:3, 3]
+        coord = transform_points(est, center[None])[0]
 
         data.append({
             'frame_id': cam_id,
