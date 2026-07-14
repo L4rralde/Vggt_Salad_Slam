@@ -4,9 +4,9 @@ import os
 import copy
 
 import pandas as pd
+import matplotlib.pyplot as plt
 from evo.tools import file_interface
 from evo.core.trajectory import PosePath3D
-import matplotlib.pyplot as plt
 import evo.tools.plot as plot
 from evo.core import metrics
 
@@ -16,6 +16,12 @@ def parse_args():
     parser.add_argument('estimated')
     parser.add_argument('gt')
     return parser.parse_args()
+
+
+def get_name_of_estimation(fname_path: str) -> str:
+    bname = os.path.basename(fname_path)
+    name, _ = os.path.splitext(bname)
+    return name
 
 
 def align_and_compute_ate_sim3(gt_path: str, est_path: str):
@@ -141,9 +147,9 @@ def main():
     views = [int(view) for view in est_traj_df['frame_id']]
     filtered_traj = PosePath3D(
         poses_se3=[
-            gt_traj.poses_se3[i]
+            gt_traj.poses_se3[i-1]
             for i in views
-            if 0 <= i < gt_traj.num_poses
+            if 0 <= i <= gt_traj.num_poses
         ]
     )
     # 5.2 And dump those into a temporal file
@@ -160,8 +166,20 @@ def main():
     print(f"Mean:   {ate_stats['mean']:.4f} m")
     print("========================================")
 
-    output_image = f'{args.estimated}.png'
+    dir_path = os.path.dirname(args.estimated)
+    name = get_name_of_estimation(args.estimated)
+    output_image = os.path.join(
+        dir_path, f'{name}.png'
+    )
     save_trajectory_plot(gt_traj, est_aligned_traj, save_path=output_image, plot_mode_str="xz")
+
+    ate_stats_csv_path = os.path.join(
+        dir_path, f'{name}_ate_stats_.csv'
+    )
+    ate_stats_df = pd.DataFrame.from_dict({
+        k: [v] for k, v in ate_stats.items()
+    })
+    ate_stats_df.to_csv(ate_stats_csv_path)
 
 
 if __name__ == '__main__':
