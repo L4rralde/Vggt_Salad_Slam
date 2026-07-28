@@ -24,6 +24,7 @@ from src.transforms.estimate import(
 )
 from src.transforms.matransforms import Homography, MatrixTransform
 from src.transforms.graphs import Sim3Graph, SL4Graph
+from src.transforms.sgraph.sim3_sgraph import Sim3SGraph
 from src.transforms.utils import to_pointcloud
 
 
@@ -36,6 +37,7 @@ def parse_args():
     parser.add_argument('--group-len', type=int, default=16)
     parser.add_argument('--num-overlap', type=int, default=2)
     parser.add_argument('--min-similarity', type=float, default=0.9)
+    parser.add_argument('--graph', type=str, default='sim3', choices=('sim3', 'sl4', 'sl4aff', 'sim3s'))
     parser.add_argument('--viz', action='store_true')
     return parser.parse_args()
 
@@ -233,7 +235,22 @@ def main():
     )
     video_tracker = FrameTracker() #KeyFrame detector
     loop_detector = LoopDetector()
-    graph = Sim3Graph()
+    if args.graph == "sim3":
+        print("Using Sim3Graph")
+        graph = Sim3Graph()
+    elif args.graph == "sl4":
+        print("Using SL4Graph")
+        graph = SL4Graph()
+    elif args.graph == "sl4aff":
+        from src.transforms.graphs import SL4Aff3Graph
+        print("SL4Aff3Graph")
+        graph = SL4Aff3Graph()
+    elif args.graph == "sim3s":
+        print("Sim3 with scale constraints")
+        graph = Sim3SGraph()
+    else:
+        pass
+
     graph.add_anchor_prior(0)
 
     num_total_imgs = 0
@@ -246,7 +263,7 @@ def main():
         frame = video.read()
         finished = frame is None
         if not finished:
-            num_total_imgs += 1
+            num_total_imgs += 1 #FIXME. Using num_total_imgs as frame id, makes frame id start at 1.
             
             #FUTURE. Do something with this.
             #tenengrad(frame)
@@ -300,6 +317,9 @@ def main():
         new_img_list = []
 
         if not adjacent_preds:
+            if args.graph == 'sim3s':
+                assert len(unaligned_preds_memory) - 1 == 0
+                graph.set_ref_intrinsic(preds.intrinsic[0].copy())
             if finished:
                 break
             continue
@@ -310,6 +330,9 @@ def main():
         child_id = len(unaligned_preds_memory) - 1
         parent_id = child_id - 1
         graph.add_measurement(parent_id, child_id, meas)
+        if args.graph == "sim3s" and finished:
+            assert child_id > 0
+            graph.add_global_s_measurement(child_id, curr_pred)
 
         if closed_loop:
             print("Found loop closure")
@@ -335,6 +358,8 @@ def main():
             break
 
     _, new_est = graph.optimize(verbose=True)
+    if args.graph == 'sim3s':
+        _, new_est = graph.scale_adjust(verbose=True, update=True)
     print("Finished online reconstruction")
     print("Starting file handling and other stuff alike")
 
