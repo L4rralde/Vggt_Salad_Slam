@@ -72,6 +72,7 @@ def main():
         args.results_path, 'unaligned_preds'
     )
     
+    print(f"Extracting trajectories of {args.results_path}")
     all_preds = [
         Prediction.from_npz_file(f)
         for f in find_npz_files(preds_dir)
