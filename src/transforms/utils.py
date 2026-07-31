@@ -71,11 +71,6 @@ def get_shared_preds(
         if v is not None
     }
 
-    if len(shared_ids) == 1:
-        for k, v in preds_a_shared.items():
-            print(k, v.shape)
-        for k, v in preds_b_shared.items():
-            print(k, v.shape)
     return (
         Prediction.from_dict(preds_a_shared),
         Prediction.from_dict(preds_b_shared)
