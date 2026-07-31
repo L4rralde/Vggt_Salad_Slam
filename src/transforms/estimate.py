@@ -1,7 +1,7 @@
 import numpy as np
 from scipy.special import huber
 from scipy.optimize import minimize, minimize_scalar
-from typing import Callable
+from typing import Callable, List
 
 from src.models.dtypes import Prediction
 from . import matransforms as mt
@@ -14,6 +14,7 @@ from .utils import (
     extr_to_homogeneous,
     get_shared_preds,
 )
+from src.sim3 import unproject_depth_map_to_point_map
 
 
 def weighted_median(values: np.ndarray, weights: np.ndarray) -> float:
@@ -272,6 +273,43 @@ def estimate_sim3_from_extrinsics(
     #Future average all estimations
     return pick_best_transform(sim3_estimates)
 
+def estimate_scale_from_ray_depths(
+    src_preds: Prediction,
+    tgt_preds: Prediction,
+) -> List[float]:
+    def estimate_scale_pairwise(X, Y) -> float:
+        assert X.shape == Y.shape
+        x_dists = np.linalg.norm(X, axis=1)
+        y_dists = np.linalg.norm(Y, axis=1)
+
+        valid = x_dists > 1e-8
+        return np.median(y_dists[valid] / x_dists[valid])
+    #We expect they already are shared subsets
+    assert list(src_preds.ids) == list(tgt_preds.ids)
+    n = len(src_preds.ids)
+    eye_extrs = np.tile(np.eye(4), (n, 1, 1))
+
+    common_mask = get_conf_mask(src_preds) & get_conf_mask(tgt_preds)
+    src_ray_depths = unproject_depth_map_to_point_map(
+        src_preds.depth,
+        src_preds.intrinsic,
+        eye_extrs
+    )
+
+    tgt_ray_depths = unproject_depth_map_to_point_map(
+        tgt_preds.depth,
+        tgt_preds.intrinsic,
+        eye_extrs
+    )
+
+    view_scales = [
+        estimate_scale_pairwise(
+            src[view_mask],
+            tgt[view_mask],
+        )
+        for src, tgt, view_mask in zip(src_ray_depths, tgt_ray_depths, common_mask)
+    ]
+    return view_scales
 
 def estimate_affine_from_extrinsics(
     src_preds: Prediction,
@@ -281,12 +319,15 @@ def estimate_affine_from_extrinsics(
     src_preds, tgt_preds = get_shared_preds(src_preds, tgt_preds)
     assert list(src_preds.ids) == list(tgt_preds.ids)
 
+    n = len(src_preds.ids)
     if s_estimation is None:
-        s = estimate_scale_from_intrinsics(src_preds, tgt_preds)
+        view_scales = estimate_scale_from_ray_depths(src_preds, tgt_preds)
+        #s = vggtlong_est_scenes_transform(src_preds, tgt_preds).s
+        #view_scales = [s for _ in range(n)]
     else:
         s = s_estimation(src_preds, tgt_preds)
-    shared_idx = np.random.randint(len(src_preds.depth))
-
+        view_scales = [s for _ in range(n)]
+    
     tgt_extrinsic = extr_to_homogeneous(tgt_preds.extrinsic)
     tgt_intrinsic = tgt_preds.intrinsic
 
@@ -295,12 +336,15 @@ def estimate_affine_from_extrinsics(
 
     A = np.zeros_like(tgt_extrinsic)
     A[..., 3, 3] = 1.0
-    A[..., :3, :3] = s * np.eye(3) #np.linalg.inv(tgt_intrinsic) @ src_intrinsic
+    A[..., :3, :3] = np.linalg.inv(tgt_intrinsic) @ src_intrinsic
+    for i in range(n):
+        A[i, :3, :3] *= view_scales[i]
     A = np.linalg.inv(tgt_extrinsic) @ A @ src_extrinsic
 
     #return mt.Affine(A[shared_idx])
     #return average_transforms([mt.Affine(mat) for mat in A])
     #return mt.Affine(A[0])
+    #Probably the following function is too sensible on numerical deltas
     return pick_best_transform([mt.Affine(mat) for mat in A])
 
 #TODO. estimate Homographies with VGGT-SLAM 1.0 method
