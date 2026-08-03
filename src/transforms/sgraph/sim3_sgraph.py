@@ -75,7 +75,13 @@ class Sim3SGraph(Sim3Graph):
 
             new_sim3_mat = np.eye(4)
             new_sim3_mat[:3, :3] = s_meas * sim3_meas.R
-            new_sim3_mat[:3, 3] = sim3_meas.t
+            #Comment: We must correct the translation (or origin)
+            # because we adopted the notation: sR | t, where t is 
+            # already iscaled, hence, scale-invariant translation is:
+            # sR | st'. When correcting the scaling factor, we seek for ds
+            # such as ds s R | ds s t', but ds = new_s/s
+            new_sim3_mat[:3, 3] = sim3_meas.t * s_meas/sim3_meas.s
+            #new_sim3_mat[:3, 3] = sim3_meas.t
             new_sim3 = matt.Sim3(new_sim3_mat)
 
             current_est = current_est @ new_sim3
