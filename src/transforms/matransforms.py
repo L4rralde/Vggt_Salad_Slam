@@ -163,15 +163,16 @@ class Sim3(MatrixTransform):
     @property
     def s(self) -> float:
         rot_scale = self._matrix[:3, :3]
-        scale = np.linalg.det(rot_scale)**(1/3)
+        # Average column norms to smooth out micro floating-point inaccuracies
+        scale = np.mean(np.linalg.norm(rot_scale, axis=0))
         return scale
     
     @property
     def R(self) -> np.ndarray:
         rot_scale = self._matrix[:3, :3]
-        scale = np.linalg.det(rot_scale)**(1/3)
-        rot = rot_scale/scale
-        return rot
+        # Average column norms to smooth out micro floating-point inaccuracies
+        scale = np.mean(np.linalg.norm(rot_scale, axis=0))
+        return rot_scale / scale
 
     @property
     def t(self) -> np.ndarray:
