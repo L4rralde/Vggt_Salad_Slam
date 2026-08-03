@@ -20,7 +20,8 @@ from src.storage import(
 )
 from src.transforms.estimate import(
     vggtlong_est_scenes_transform,
-    estimate_affine_from_extrinsics
+    estimate_affine_from_extrinsics,
+    average_intrinsics
 )
 from src.transforms.matransforms import Homography, MatrixTransform
 from src.transforms.graphs import Sim3Graph, SL4Graph
@@ -234,6 +235,7 @@ def main():
         os.path.join(args.out_dir,'unaligned_preds')
     )
     video_tracker = FrameTracker() #KeyFrame detector
+    found_any_loop = False
     loop_detector = LoopDetector()
     if args.graph == "sim3":
         print("Using Sim3Graph")
@@ -330,13 +332,17 @@ def main():
         child_id = len(unaligned_preds_memory) - 1
         parent_id = child_id - 1
         graph.add_measurement(parent_id, child_id, meas)
-        if args.graph == "sim3s" and finished:
+        if args.graph == "sim3s":
             assert child_id > 0
-            graph.add_global_s_measurement(child_id, curr_pred)
+            if child_id % 5 == 0:
+                print(f"Adding global s meas for id: {child_id}")
+                graph.add_global_s_measurement(child_id, curr_pred)
+                _, new_est = graph.scale_adjust(verbose=True, update=True)
 
         if closed_loop:
             print("Found loop closure")
             print(closed_loop)
+            found_any_loop = True
             #7 Loop closure
             src_group_id, dst_group_id, constraint = compute_closed_looop_constraint(
                 closed_loop,
@@ -357,9 +363,10 @@ def main():
         if finished:
             break
 
-    _, new_est = graph.optimize(verbose=True)
-    if args.graph == 'sim3s':
+    if args.graph == 'sim3s' and not found_any_loop:
         _, new_est = graph.scale_adjust(verbose=True, update=True)
+    if found_any_loop:
+        _, new_est = graph.optimize(verbose=True)
     print("Finished online reconstruction")
     print("Starting file handling and other stuff alike")
 
