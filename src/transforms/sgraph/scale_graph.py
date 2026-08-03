@@ -1,12 +1,17 @@
-from typing import List, Set
+from typing import(
+    List, Set, Sequence, Optional, Tuple
+)
 
 import numpy as np
 from scipy.optimize import least_squares
+from scipy.sparse import csr_matrix
+from scipy.sparse.linalg import lsqr
 
 
 class ScaleGraph:
     def __init__(self) -> None:
-        self.edges: List[tuple] = []
+        # Edge structure: (parent_i, child_j, measurement, weight)
+        self.edges: List[Tuple[int, int, float, float]] = []
         self._known_nodes: Set[int] = set()
 
     @property
@@ -81,6 +86,66 @@ class ScaleGraph:
         return np.exp(optimized_x)
 
 
+class SparseScaleGraph(ScaleGraph):
+    def optimize(self, initial_values: Optional[List[float]] = None) -> Sequence[float]:
+        """
+        Solves the log-scale linear least squares system Ax = b.
+        
+        Note: `initial_values` is optional because a linear least-squares problem 
+        does not require an initial guess to converge to the global optimum.
+        """
+        if self.num_nodes == 0:
+            return []
+        
+        self._validate_contiguous_nodes()
+
+        # Handle trivial case with only anchor node
+        if self.num_nodes == 1:
+            return np.array(1.0)
+
+        # Construct sparse linear system Ax = b
+        # Columns correspond to free variables: x_1, x_2, ..., x_{N-1}
+        # Column index for node k (k > 0) is (k - 1)
+        num_free_vars = self.num_nodes - 1
+        num_edges = len(self.edges)
+
+        rows = []
+        cols = []
+        data = []
+        b = np.zeros(num_edges)
+
+        for edge_idx, (i, j, meas, weight) in enumerate(self.edges):
+            sqrt_w = np.sqrt(weight)
+            log_meas = np.log(meas)
+            
+            # Equation: sqrt(w) * (x_j - x_i) = sqrt(w) * log(meas)
+            b[edge_idx] = sqrt_w * log_meas
+
+            # Add x_j term (+1) if j is a free variable (j > 0)
+            if j > 0:
+                rows.append(edge_idx)
+                cols.append(j - 1)
+                data.append(sqrt_w)
+
+            # Add x_i term (-1) if i is a free variable (i > 0)
+            if i > 0:
+                rows.append(edge_idx)
+                cols.append(i - 1)
+                data.append(-sqrt_w)
+
+        # Build CSR matrix
+        A = csr_matrix((data, (rows, cols)), shape=(num_edges, num_free_vars))
+
+        # Solve Ax = b using sparse least squares
+        # lsqr returns a tuple where index 0 is the solution array
+        solution = lsqr(A, b)[0]
+
+        # Reconstruct full x array (anchoring node 0 to log(1.0) = 0.0)
+        optimized_x = np.zeros(self.num_nodes)
+        optimized_x[1:] = solution
+
+        return np.exp(optimized_x)
+    
 # ==========================================
 # Example Usage & Verification
 # ==========================================

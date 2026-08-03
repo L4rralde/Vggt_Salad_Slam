@@ -4,7 +4,7 @@ from collections import OrderedDict
 
 import numpy as np
 
-from src.transforms.sgraph.scale_graph import ScaleGraph
+from src.transforms.sgraph.scale_graph import ScaleGraph, SparseScaleGraph
 from src.transforms.graphs import Sim3Graph
 import src.transforms.matransforms as matt
 from src.transforms.estimate import EstimateScaleAnchorIntrinsic
@@ -14,7 +14,7 @@ from src.models import Prediction
 class Sim3SGraph(Sim3Graph):
     def __init__(self):
         super().__init__()
-        self.sgraph = ScaleGraph()
+        self.sgraph = SparseScaleGraph()
         self.s_estimater_by_k = None
         self.sim3_s_w = 1.0
         self.refk_s_w = 0.25 #Comment: I don't know how to set this value.
