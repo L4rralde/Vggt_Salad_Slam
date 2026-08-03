@@ -319,7 +319,7 @@ def main():
         if not adjacent_preds:
             if args.graph == 'sim3s':
                 assert len(unaligned_preds_memory) - 1 == 0
-                graph.set_ref_intrinsic(preds.intrinsic[0].copy())
+                graph.set_ref_intrinsic(average_intrinsics(preds.intrinsic))
             if finished:
                 break
             continue
