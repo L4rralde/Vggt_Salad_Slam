@@ -223,6 +223,30 @@ class EstimateScaleAnchorIntrinsic:
         return np.median(candidates)
 
 
+def average_intrinsics(intrinsics: np.ndarray, method: str='mean') -> np.ndarray:
+    if intrinsics.ndim != 3 or intrinsics.shape[1:] != (3, 3):
+        raise ValueError("Expected an array of shape (N, 3, 3)")
+
+    if len(intrinsics) == 1:
+        return intrinsics[0].copy()
+
+    mask = np.ones((3, 3), dtype=bool)
+    mask[0, 0] = False
+    mask[1, 1] = False
+
+    if not np.allclose(intrinsics[:, mask], intrinsics[0, mask]):
+        raise ValueError("Intrinsic matrices are incompatible.")
+
+    if method == 'mean':
+        result = intrinsics[0].astype(intrinsics.dtype, copy=True)
+        result[0, 0] = intrinsics[:, 0, 0].mean()
+        result[1, 1] = intrinsics[:, 1, 1].mean()
+        return result
+    else:
+        #FUTURE
+        raise ValueError(f"Method not supported: {method}")
+
+
 def vggtlong_est_scenes_transform(
     src_preds: Prediction,
     tgt_preds: Prediction
