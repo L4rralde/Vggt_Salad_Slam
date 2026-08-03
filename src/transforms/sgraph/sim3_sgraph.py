@@ -17,7 +17,10 @@ class Sim3SGraph(Sim3Graph):
         self.sgraph = ScaleGraph()
         self.s_estimater_by_k = None
         self.sim3_s_w = 1.0
-        self.refk_s_w = 0.001
+        self.refk_s_w = 0.25 #Comment: I don't know how to set this value.
+                                #I expect be lower than self.sim3_s_w
+                                #because sim_3.s is a better estimator than 
+                                # focal lengths ratios
         self.parents = {}
         self.scale_values = {0: 1.0}
     
