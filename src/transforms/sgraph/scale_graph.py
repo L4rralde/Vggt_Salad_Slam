@@ -32,6 +32,14 @@ class ScaleGraph:
         self._known_nodes.add(i)
         self._known_nodes.add(j)
     
+    def _validate_contiguous_nodes(self) -> None:
+        """Helper to ensure node IDs are 0, 1, ..., num_nodes-1."""
+        if self.num_nodes > 0 and max(self._known_nodes) >= self.num_nodes:
+            raise RuntimeError(
+                "Node IDs must be contiguous integers starting from 0. "
+                f"Max node ID is {max(self._known_nodes)} but graph has {self.num_nodes} nodes."
+            )
+    
     def _compute_residuals(self, free_values: List[float]) -> np.ndarray:
         """
         values: Ordered list (node 0, node 1, ...) of log(s_i) values
@@ -43,18 +51,19 @@ class ScaleGraph:
         full_x[0] = 0
         full_x[1:] = free_values
 
-        residuals = []
         residuals = [
-            np.sqrt(w) * (np.log(meas) + full_x[j] - full_x[i])
+            np.sqrt(w) * (-np.log(meas) + full_x[j] - full_x[i])
             for i, j, meas, w in self.edges
         ]
-
-        return np.array(residuals)
+        residuals = np.array(residuals)
+        return residuals
     
-    def optimize(self, values: List[float]) -> List[float]:
+    def optimize(self, values: List[float]) -> Sequence[float]:
         """
         values: Ordered list (node 0, node 1, ...) of s_i values
         """
+        self._validate_contiguous_nodes()
+
         if len(values) != len(self._known_nodes):
             raise RuntimeError("len mismatch")
         if values[0] != 1.0:
