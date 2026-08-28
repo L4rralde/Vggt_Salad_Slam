@@ -122,6 +122,20 @@ class SL4Affine(SL4):
         assert eps.shape == (12,)
         return eps
 
+    def inv(self) -> "SL4Affine":
+        A = self.mat[:3, :3]
+        t = self.mat[:3, 3]
+        A_inv = torch.linalg.inv(A)
+        t_inv = -A_inv @ t
+        mat_inv = torch.eye(
+            4,
+            dtype=self.mat.dtype,
+            device=self.mat.device
+        )
+        mat_inv[:3, :3] = A_inv
+        mat_inv[:3, 3] = t_inv
+        return SL4Affine(mat_inv)
+
     @classmethod
     def Exp(cls, x: torch.Tensor) -> "SL4Affine":
         assert x.shape == (12,)

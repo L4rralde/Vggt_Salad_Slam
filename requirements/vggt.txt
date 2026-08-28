@@ -15,3 +15,8 @@ pandas
 
 #slam dependencies
 pypose
+gtsam-develop
+scipy
+
+#For visualization
+open3d

@@ -10,10 +10,11 @@ from src.sim3.utils import get_conf_mask, unproject_depth_map_to_point_map
 
 
 def to_pointcloud(conf, images, world_points):
-    mask = get_conf_mask(conf)
+    images = np.transpose(images, (0, 2, 3, 1))
+    mask = get_conf_mask(conf, lower_p=40.0, min_conf=1.02)
 
     points = world_points[mask].reshape(-1, 3)
-    colors = images[mask].reshape(-1, 3)/255.0
+    colors = images[mask].reshape(-1, 3)
 
     point_cloud = o3d.geometry.PointCloud()
     point_cloud.points = o3d.utility.Vector3dVector(points)

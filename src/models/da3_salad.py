@@ -58,7 +58,7 @@ class Da3SaladSplit:
 
         return ViewPrediction(
             imgs_cpu,
-            x.squeeze(0).cpu(),
+            x,
             descriptor.cpu()
         )
 
@@ -68,7 +68,7 @@ class Da3SaladSplit:
         with torch.no_grad():
             with torch.autocast(device_type=self.device, dtype=autocast_dtype):
                 outputs, _ = self.backbone._alt_attend(
-                    view_preds.patch_tokens.unsqueeze(0).to(self.device, non_blocking=True),
+                    view_preds.patch_tokens,
                     [1, *imgs_cpu.shape],
                     n=self.backbone.da3.model.backbone.out_layers,
                     **kwargs
@@ -77,7 +77,7 @@ class Da3SaladSplit:
         output = Dict()
         output['images'] = imgs_cpu
         output['latent_tokens'] = tuple(
-            (f.cpu(), cam.cpu())
+            (f, cam)
             for f, cam in feats
         )
         #torch.cuda.empty_cache()
@@ -90,7 +90,7 @@ class Da3SaladSplit:
         with torch.no_grad():
             with torch.autocast(device_type=self.device, dtype=autocast_dtype):
                 feats = tuple(
-                    (f.to(self.device, non_blocking=True), cam.to(self.device, non_blocking=True))
+                    (f, cam)
                     for f, cam in seq_preds.latent_tokens
                 )
                 imgs = imgs_cpu.to(self.device, non_blocking=True)[None].float()
@@ -119,7 +119,7 @@ class Da3SaladSplit:
         with torch.no_grad():
             with torch.autocast(device_type=self.device, dtype=autocast_dtype):
                 outputs, _ = self.backbone._alt_attend(
-                    view_preds.patch_tokens.unsqueeze(0).to(self.device, non_blocking=True),
+                    view_preds.patch_tokens,
                     [1, *imgs_cpu.shape],
                     n=self.backbone.da3.model.backbone.out_layers,
                     **kwargs
